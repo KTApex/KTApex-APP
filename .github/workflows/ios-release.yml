@@ -85,10 +85,12 @@ jobs:
           echo "Exporting with method: $EXPORT_METHOD (team hidden)"
 
       - name: Archive
+        id: archive
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
         run: |
+          set -o pipefail
           # Override BUNDLE_IDENTIFIER, not PRODUCT_BUNDLE_IDENTIFIER: the project derives
           # PRODUCT_BUNDLE_IDENTIFIER from it ("$(BUNDLE_IDENTIFIER)") and the widget
           # extension appends ".widget". Setting PRODUCT_BUNDLE_IDENTIFIER directly would
@@ -100,14 +102,36 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/MyVault.xcarchive" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER"
+            BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" \
+            2>&1 | tee "$RUNNER_TEMP/archive.log"
+
+      - name: Show archive errors
+        if: failure() && steps.archive.outcome == 'failure'
+        run: |
+          echo "=========== ARCHIVE DIAGNOSTICS (signing included) ==========="
+          grep -E "error: |Code Signing Error|requires a provisioning profile|No profiles for|No signing certificate|BUILD FAILED|The following build commands failed" "$RUNNER_TEMP/archive.log" | head -15 | while IFS= read -r line; do echo "::error::$line"; done || true
+          echo "=========== LAST 60 LINES ==========="
+          tail -n 60 "$RUNNER_TEMP/archive.log" || true
+          echo "======================================"
 
       - name: Export IPA
+        id: export
         run: |
+          set -o pipefail
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/MyVault.xcarchive" \
             -exportPath "$RUNNER_TEMP/ipa" \
-            -exportOptionsPlist ExportOptions.plist
+            -exportOptionsPlist ExportOptions.plist \
+            2>&1 | tee "$RUNNER_TEMP/export.log"
+
+      - name: Show export errors
+        if: failure() && steps.export.outcome == 'failure'
+        run: |
+          echo "=========== EXPORT DIAGNOSTICS ==========="
+          grep -E "error: |errorCode|Code Signing Error|requires a provisioning profile|No profiles for|No signing certificate" "$RUNNER_TEMP/export.log" | head -15 | while IFS= read -r line; do echo "::error::$line"; done || true
+          echo "=========== LAST 60 LINES ==========="
+          tail -n 60 "$RUNNER_TEMP/export.log" || true
+          echo "======================================"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
