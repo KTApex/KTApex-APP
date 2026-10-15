@@ -14,7 +14,7 @@ on:
           - development
 
 env:
-  XCODE_VERSION: "16.2"
+  # Use the runner's default (latest) Xcode, matching the pre-installed iOS SDK.
   SCHEME: MyVault
 
 jobs:
@@ -25,8 +25,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+      - name: Show Xcode version
+        run: xcodebuild -version
 
       - name: Validate signing secrets
         run: |

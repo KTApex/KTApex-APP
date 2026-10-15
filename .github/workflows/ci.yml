@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 env:
-  XCODE_VERSION: "16.2"
+  # Use the runner's default (latest) Xcode, which ships with a matching iOS
+  # Simulator runtime. Pinning an old version (e.g. 16.2) causes "iOS X not
+  # installed" because that SDK's runtime is not present on macos-15 runners.
   SCHEME: MyVault
   PROJECT: MyVault.xcodeproj
 
@@ -20,29 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
-
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Install iOS platform (required for simulator build)
-        run: |
-          # The macos-15 runner's Xcode 16.2 does not ship with an installed iOS
-          # platform/SDK, so simulator destinations are unavailable until we
-          # download it. This is Apple's supported mechanism and is idempotent.
-          sudo xcodebuild -downloadPlatform iOS 2>/dev/null || true
-
-      - name: Ensure a simulator device exists
-        run: |
-          if ! xcrun simctl list devices available | grep -q "iPhone"; then
-            # No simulator devices yet — create one against the newest runtime.
-            RUNTIME_ID=$(xcrun simctl list runtimes | grep -E "iOS" | grep -v unavailable | head -1 | sed -E 's/^([A-Za-z0-9.-]+) .*/\1/')
-            echo "creating simulator with runtime $RUNTIME_ID"
-            xcrun simctl create "iPhone 16" "com.apple.CoreSimulator.SimDeviceType.iPhone-16" "$RUNTIME_ID"
-          fi
-          echo "--- available devices ---"
-          xcrun simctl list devices available | grep -E "iPhone" || true
+      - name: List available runtimes
+        run: xcrun simctl list runtimes
 
       - name: List schemes
         run: xcodebuild -list -project "$PROJECT"
@@ -51,28 +35,13 @@ jobs:
         id: bundle
         run: echo "BUNDLE_IDENTIFIER=${BUNDLE_ID:-com.ktapex.myvault}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve simulator
-        id: sim
-        run: |
-          # Prefer a concrete iPhone name; fall back to the newest available
-          # iPhone simulator if "iPhone 16" is not present on this runner.
-          SIM="iPhone 16"
-          if ! xcrun simctl list devices available | grep -q "iPhone 16"; then
-            SIM=$(xcrun simctl list devices available | grep -E "iPhone" | head -1 | sed -E 's/^[[:space:]]*(.*) \(.*/\1/')
-            if [ -z "$SIM" ]; then
-              SIM=$(xcrun simctl list devices available | grep -E "iPhone" | head -1 | sed -E 's/^[[:space:]]*(.*) \([0-9A-F-]*\).*/\1/')
-            fi
-          fi
-          echo "resolved simulator: $SIM"
-          echo "SIM=$SIM" >> "$GITHUB_OUTPUT"
-
       - name: Build (clean)
         run: |
           xcodebuild clean build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.SIM }}" \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath DerivedData \
             BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
             DEVELOPMENT_TEAM="" \
@@ -84,7 +53,7 @@ jobs:
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.SIM }}" \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult \
             BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
