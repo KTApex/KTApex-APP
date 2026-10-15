@@ -7,6 +7,10 @@ struct LockScreenView: View {
     @State private var isAuthenticating = false
     private let pinService = PINService.shared
 
+    /// Biometrics are offered unless the user switched them off in Settings while
+    /// keeping a PIN as the fallback unlock method.
+    private var biometricUnlockAllowed: Bool { AppSettingsStore.biometricUnlockAllowed }
+
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
@@ -33,7 +37,9 @@ struct LockScreenView: View {
                 }
                 Button("Unlock with PIN") { unlockWithPIN() }
                     .buttonStyle(.borderedProminent)
-                Button("Use biometrics") { unlockWithBiometrics() }
+                if biometricUnlockAllowed {
+                    Button("Use biometrics") { unlockWithBiometrics() }
+                }
             } else {
                 Button("Unlock with Face ID / Passcode") { unlockWithBiometrics() }
                     .buttonStyle(.borderedProminent)
@@ -42,7 +48,7 @@ struct LockScreenView: View {
             Spacer()
         }
         .padding()
-        .onAppear { unlockWithBiometrics() }
+        .onAppear { if biometricUnlockAllowed { unlockWithBiometrics() } }
     }
 
     private func unlockWithBiometrics() {

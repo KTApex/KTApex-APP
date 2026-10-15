@@ -33,20 +33,35 @@ final class AppState: ObservableObject {
     }
 
     func didEnterBackground() {
+        // Drop decrypted thumbnails immediately, but defer the lock decision to the
+        // next activation: locking here would present the lock screen (and its
+        // biometric prompt) behind the app-switcher cover, where the prompt cannot
+        // succeed and the user would come back to a lock screen that never asked.
+        ThumbnailCache.shared.clear()
         backgroundedAt = Date()
-        let timeout = AppSettingsStore.autoLockTimeout
-        if timeout <= 0 { lock(); return }
     }
     func didBecomeActive() {
         guard onboardingCompleted else { return }
+        guard isUnlocked else {
+            // Already locked. Re-prompt only when returning from the background — on
+            // a cold launch LockScreenView prompts from its own onAppear, and asking
+            // twice would launch two competing biometric evaluations.
+            if backgroundedAt != nil {
+                backgroundedAt = nil
+                Task { await authenticateIfNeeded() }
+            }
+            return
+        }
         let timeout = AppSettingsStore.autoLockTimeout
-        if !isUnlocked { return }
         if timeout <= 0 { lock(); return }
         if let t = backgroundedAt, Date().timeIntervalSince(t) >= Double(timeout) { lock() }
-        if !isUnlocked { Task { await authenticateIfNeeded() } }
+        backgroundedAt = nil
     }
     func authenticateIfNeeded() async {
         if isUnlocked { return }
+        // When the user has turned biometrics off (with a PIN as the fallback),
+        // unlocking is owned by the lock screen's PIN field.
+        guard AppSettingsStore.biometricUnlockAllowed else { return }
         do {
             let ok = try await authService.authenticate(reason: "Unlock MyVault")
             isUnlocked = ok

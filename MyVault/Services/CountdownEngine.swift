@@ -14,7 +14,10 @@ enum CountdownEngine {
         if !event.repeatsYearly {
             let target = cal.startOfDay(for: event.date)
             let days = cal.dateComponents([.day], from: startOfToday, to: target).day ?? 0
-            return Occurrence(nextDate: event.date, daysRemaining: max(days, 0), yearsCompleted: 0)
+            // Keep the sign: a one-off date that has already passed must not be
+            // reported as "Today" forever. Callers filter on `daysRemaining >= 0`
+            // to decide what counts as upcoming.
+            return Occurrence(nextDate: event.date, daysRemaining: days, yearsCompleted: 0)
         }
         let month = cal.component(.month, from: event.date)
         var day = cal.component(.day, from: event.date)
@@ -38,10 +41,12 @@ enum CountdownEngine {
 
     static func headline(for event: SpecialDay, from reference: Date = Date()) -> String {
         let occ = nextOccurrence(of: event, from: reference)
-        switch occ.daysRemaining {
+        let days = occ.daysRemaining
+        switch days {
         case 0: return "Today"
         case 1: return "Tomorrow"
-        default: return "\(occ.daysRemaining) days left"
+        case ..<0: return "\(-days) \(days == -1 ? "day" : "days") ago"
+        default: return "\(days) days left"
         }
     }
 

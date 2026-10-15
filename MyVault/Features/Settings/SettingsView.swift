@@ -22,11 +22,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Security") {
+                Section {
                     Toggle("Face ID / Biometrics", isOn: Binding(
                         get: { AppSettingsStore.biometricEnabled },
-                        set: { UserDefaults.standard.set($0, forKey: "mv.bio") }
+                        set: { AppSettingsStore.setBiometricEnabled($0) }
                     ))
+                    .disabled(!PINService.shared.isEnabled)
                     if PINService.shared.isEnabled {
                         Button("Disable PIN", role: .destructive) {
                             PINService.shared.disable()
@@ -39,6 +40,12 @@ struct SettingsView: View {
                         ForEach(lockOptions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .onChange(of: autoLock) { _, v in AppSettingsStore.setAutoLock(v) }
+                } header: {
+                    Text("Security")
+                } footer: {
+                    if !PINService.shared.isEnabled {
+                        Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
+                    }
                 }
                 Section("Notifications") {
                     HStack {

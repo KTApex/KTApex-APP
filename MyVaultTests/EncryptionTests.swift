@@ -48,13 +48,15 @@ final class EncryptionTests: XCTestCase {
     }
 
     func testTruncatedCiphertextRejected() throws {
-        let data = Data("truncation".utf8)
+        // Drop the trailing 16-byte authentication tag. Use a payload long enough
+        // that the truncated blob still parses as a sealed box (nonce + ciphertext),
+        // so decryption reaches the tag check; either way the whole attempt must
+        // throw rather than return plaintext (a short blob fails at construction
+        // with an incorrect-parameter-size error instead).
+        let data = Data(repeating: 0x41, count: 64)
         let key = SymmetricKey(size: .bits256)
         let sealed = try AES.GCM.seal(data, using: key)
-        // Drop the trailing 16-byte authentication tag. The combined box is still
-        // long enough to construct, so the failure surfaces at `open` (tag check).
-        let truncated = sealed.combined!.dropLast(16)
-        let box = try AES.GCM.SealedBox(combined: Data(truncated))
-        XCTAssertThrowsError(try AES.GCM.open(box, using: key))
+        let truncated = Data(sealed.combined!.dropLast(16))
+        XCTAssertThrowsError(try AES.GCM.open(AES.GCM.SealedBox(combined: truncated), using: key))
     }
 }
