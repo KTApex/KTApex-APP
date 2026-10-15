@@ -89,6 +89,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
         run: |
+          # Override BUNDLE_IDENTIFIER, not PRODUCT_BUNDLE_IDENTIFIER: the project derives
+          # PRODUCT_BUNDLE_IDENTIFIER from it ("$(BUNDLE_IDENTIFIER)") and the widget
+          # extension appends ".widget". Setting PRODUCT_BUNDLE_IDENTIFIER directly would
+          # give the app and the widget the same id, which cannot be signed or embedded.
           xcodebuild archive \
             -project MyVault.xcodeproj \
             -scheme "$SCHEME" \
@@ -96,7 +100,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/MyVault.xcarchive" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER"
+            BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER"
 
       - name: Export IPA
         run: |

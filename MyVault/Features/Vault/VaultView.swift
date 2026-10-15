@@ -257,7 +257,6 @@ struct VaultView: View {
             var originals: [String] = []
             for item in items {
                 do {
-                    if let assetID = item.itemIdentifier { originals.append(assetID) }
                     guard let data = try await item.loadTransferable(type: Data.self) else { continue }
                     // PhotosPicker transfers raw bytes; if they decode as an image it is a photo, otherwise video.
                     let isVideo = UIImage(data: data) == nil
@@ -275,6 +274,10 @@ struct VaultView: View {
                         m.album = selectedAlbum
                         context.insert(m)
                     }
+                    // Only offer to remove the Photos original once the encrypted copy
+                    // is safely on disk; otherwise a failed import could prompt the user
+                    // to delete an item that was never imported.
+                    if let assetID = item.itemIdentifier { originals.append(assetID) }
                 } catch {
                     await MainActor.run { importError = "One item could not be imported. The rest were kept safe." }
                 }

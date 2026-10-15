@@ -40,7 +40,11 @@ final class NotificationService {
 
         for days in event.reminderDays {
             guard let triggerDate = CountdownEngine.notificationDate(for: event, daysBefore: days) else { continue }
-            guard triggerDate > Date() else { continue }
+            // Yearly events recur, so a reminder that already passed this year still
+            // makes sense (it fires next year). A one-off reminder in the past would
+            // never fire at all, so drop it.
+            let repeats = event.repeatsYearly
+            guard repeats || triggerDate > Date() else { continue }
             let content = UNMutableNotificationContent()
             content.title = CountdownEngine.notificationTitle(for: event, daysBefore: days)
             content.body = CountdownEngine.notificationBody(for: event, daysBefore: days)
@@ -48,7 +52,14 @@ final class NotificationService {
             content.userInfo = ["specialDayID": event.id]
             var comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: triggerDate)
             comps.second = 0
-            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            if repeats {
+                // A repeating yearly trigger must omit the year (keeping it would make
+                // the notification fire exactly once), and Feb 29 is clamped to Feb 28
+                // so it still fires in non-leap years.
+                comps.year = nil
+                if comps.month == 2 && comps.day == 29 { comps.day = 28 }
+            }
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: repeats)
             let req = UNNotificationRequest(
                 identifier: "mv.\(event.id).\(days)",
                 content: content,

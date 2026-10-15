@@ -56,6 +56,9 @@ jobs:
         run: |
           echo "=========== ALL DIAGNOSTIC LINES (error/warning) ==========="
           grep -nE "(error|warning|note):|Undefined symbols|ld: |clang: error|BUILD FAILED|The following build commands failed" build.log || true
+          # Mirror the first diagnostics as check annotations: they are visible in the
+          # Actions UI and via the public check-run API without downloading artifacts.
+          grep -E "(error|warning): |BUILD FAILED|The following build commands failed" build.log | head -15 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo ""
           echo "=========== LAST 120 LINES OF BUILD LOG ==========="
           tail -n 120 build.log
@@ -95,6 +98,8 @@ jobs:
         run: |
           echo "=========== UNIT TEST FAILURES ==========="
           grep -nE "error:|XCTAssert|Test Case .* failed|failed \\(|\\*\\* TEST FAILED" unit-test.log || true
+          # Mirror the first failures as check annotations (visible without the artifacts).
+          grep -E "error: |XCTAssert|Test Case .* failed|TEST FAILED" unit-test.log | head -15 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 120 LINES ==========="
           tail -n 120 unit-test.log
           echo "====================================="
@@ -122,6 +127,8 @@ jobs:
         run: |
           echo "=========== UI TEST FAILURES ==========="
           grep -nE "error:|XCTAssert|Test Case .* failed|failed \\(|\\*\\* TEST FAILED" ui-test.log || true
+          # Mirror the first failures as check annotations (visible without the artifacts).
+          grep -E "error: |XCTAssert|Test Case .* failed|TEST FAILED" ui-test.log | head -15 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 120 LINES ==========="
           tail -n 120 ui-test.log
           echo "==================================="
