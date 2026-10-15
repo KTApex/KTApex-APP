@@ -54,9 +54,12 @@ jobs:
       - name: Show build errors
         if: steps.build.outcome == 'failure'
         run: |
-          echo "=========== COMPILER / LINK ERRORS ==========="
-          grep -nE "error:|error :|fatal error:|Undefined symbols|ld: |clang: error|swift-frontend.*error" build.log || true
-          echo "=============================================="
+          echo "=========== ALL DIAGNOSTIC LINES (error/warning) ==========="
+          grep -nE "(error|warning|note):|Undefined symbols|ld: |clang: error|BUILD FAILED|The following build commands failed" build.log || true
+          echo ""
+          echo "=========== LAST 120 LINES OF BUILD LOG ==========="
+          tail -n 120 build.log
+          echo "=================================================="
 
       - name: Fail if build failed
         if: steps.build.outcome == 'failure'
