@@ -1,0 +1,75 @@
+import Foundation
+
+/// Countdown math using Calendar APIs. Handles leap years and yearly repeats correctly.
+enum CountdownEngine {
+    struct Occurrence {
+        let nextDate: Date
+        let daysRemaining: Int
+        let yearsCompleted: Int
+    }
+
+    static func nextOccurrence(of event: SpecialDay, from reference: Date = Date(), calendar: Calendar = .current) -> Occurrence {
+        let cal = calendar
+        let startOfToday = cal.startOfDay(for: reference)
+        if !event.repeatsYearly {
+            let target = cal.startOfDay(for: event.date)
+            let days = cal.dateComponents([.day], from: startOfToday, to: target).day ?? 0
+            return Occurrence(nextDate: event.date, daysRemaining: max(days, 0), yearsCompleted: 0)
+        }
+        let month = cal.component(.month, from: event.date)
+        var day = cal.component(.day, from: event.date)
+        var year = cal.component(.year, from: reference)
+        // Clamp Feb 29 to Feb 28 in non-leap years.
+        if month == 2 && day == 29 && !isLeapYear(year, calendar: cal) { day = 28 }
+        var comps = DateComponents(year: year, month: month, day: day)
+        var candidate = cal.date(from: comps) ?? reference
+        if cal.startOfDay(for: candidate) < startOfToday {
+            year += 1
+            var d = cal.component(.day, from: event.date)
+            if month == 2 && d == 29 && !isLeapYear(year, calendar: cal) { d = 28 }
+            comps = DateComponents(year: year, month: month, day: d)
+            candidate = cal.date(from: comps) ?? reference
+        }
+        let days = cal.dateComponents([.day], from: startOfToday, to: cal.startOfDay(for: candidate)).day ?? 0
+        let originYear = cal.component(.year, from: event.date)
+        let completed = days > 0 ? (year - originYear - 1) : (year - originYear)
+        return Occurrence(nextDate: candidate, daysRemaining: max(days, 0), yearsCompleted: max(completed, 0))
+    }
+
+    static func headline(for event: SpecialDay, from reference: Date = Date()) -> String {
+        let occ = nextOccurrence(of: event, from: reference)
+        switch occ.daysRemaining {
+        case 0: return "Today"
+        case 1: return "Tomorrow"
+        default: return "\(occ.daysRemaining) days left"
+        }
+    }
+
+    static func isLeapYear(_ year: Int, calendar: Calendar = .current) -> Bool {
+        guard let feb = calendar.date(from: DateComponents(year: year, month: 2, day: 1)),
+              let range = calendar.range(of: .day, in: .month, for: feb) else { return false }
+        return range.count == 29
+    }
+
+    static func notificationDate(for event: SpecialDay, daysBefore: Int, calendar: Calendar = .current) -> Date? {
+        let occ = nextOccurrence(of: event, calendar: calendar)
+        guard let base = calendar.date(byAdding: .day, value: -daysBefore, to: occ.nextDate) else { return nil }
+        var comps = calendar.dateComponents([.year, .month, .day], from: base)
+        comps.hour = event.reminderTimeHour
+        comps.minute = event.reminderTimeMinute
+        return calendar.date(from: comps)
+    }
+
+    static func notificationTitle(for event: SpecialDay, daysBefore: Int) -> String {
+        switch event.type {
+        case .birthday: return "Birthday Reminder"
+        default: return "Special Day"
+        }
+    }
+
+    static func notificationBody(for event: SpecialDay, daysBefore: Int) -> String {
+        if daysBefore == 0 { return "\(event.title) is today." }
+        if daysBefore == 1 { return "\(event.title) is tomorrow." }
+        return "\(event.title) is in \(daysBefore) days."
+    }
+}

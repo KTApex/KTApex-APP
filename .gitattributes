@@ -1,0 +1,24 @@
+# Normalize line endings for cross-platform consistency (macOS CI + Windows dev).
+* text=auto
+
+# Source and config files should always use LF in the repository.
+*.swift text eol=lf
+*.plist text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.entitlements text eol=lf
+*.pbxproj text eol=lf
+*.xcscheme text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+
+# Binary files are never line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.mobileprovision binary
+*.p12 binary
+*.cer binary
