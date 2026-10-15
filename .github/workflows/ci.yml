@@ -33,13 +33,23 @@ jobs:
         id: bundle
         run: echo "BUNDLE_IDENTIFIER=${BUNDLE_ID:-com.ktapex.myvault}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve simulator
+        id: sim
+        run: |
+          SIM="iPhone 16"
+          if ! xcrun simctl list devices available | grep -q "iPhone 16"; then
+            SIM=$(xcrun simctl list devices available | grep -E "iPhone" | head -1 | sed -E 's/^[[:space:]]*(.*) \(.*/\1/')
+          fi
+          echo "resolved simulator: $SIM"
+          echo "SIM=$SIM" >> "$GITHUB_OUTPUT"
+
       - name: Build (clean)
         run: |
           xcodebuild clean build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.SIM }}" \
             -derivedDataPath DerivedData \
             BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
             DEVELOPMENT_TEAM="" \
@@ -51,7 +61,7 @@ jobs:
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.SIM }}" \
             -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult \
             BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
