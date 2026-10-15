@@ -18,6 +18,20 @@ final class AppState: ObservableObject {
     private let authService = AuthenticationService.shared
     private var backgroundedAt: Date?
 
+    /// UI-testing hook. Only active when XCTest launches the app with
+    /// `--uitesting` (an argument the production binary never receives), so it
+    /// does not weaken real authentication. It lets UI tests reach the tab
+    /// interface deterministically on a simulator without enrolled biometrics.
+    private let uiTesting = ProcessInfo.processInfo.arguments.contains("--uitesting")
+
+    init() {
+        if uiTesting {
+            // Skip onboarding + lock so UI tests can exercise navigation.
+            onboardingCompleted = true
+            isUnlocked = true
+        }
+    }
+
     func didEnterBackground() {
         backgroundedAt = Date()
         let timeout = AppSettingsStore.autoLockTimeout
