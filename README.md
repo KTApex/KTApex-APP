@@ -97,6 +97,7 @@ This rewrites `MyVault.xcodeproj/project.pbxproj` and patches the shared scheme 
 | `P12_PASSWORD` | Password for the `.p12` |
 | `KEYCHAIN_PASSWORD` | Any random string for the temp CI keychain |
 | `PROVISIONING_PROFILE_BASE64` | Base64 of the matching `.mobileprovision` |
+| `WIDGET_PROVISIONING_PROFILE_BASE64` | *Optional* — Base64 of a profile for `<BUNDLE_IDENTIFIER>.widget`; the archive embeds the widget extension, so without it (or Xcode-managed signing) the widget cannot be signed |
 | `APPLE_TEAM_ID` | Your 10-char Team ID |
 | `BUNDLE_IDENTIFIER` | e.g. `com.yourname.myvault` |
 
