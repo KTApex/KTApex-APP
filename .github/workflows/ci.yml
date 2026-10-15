@@ -26,6 +26,24 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Install iOS platform (required for simulator build)
+        run: |
+          # The macos-15 runner's Xcode 16.2 does not ship with an installed iOS
+          # platform/SDK, so simulator destinations are unavailable until we
+          # download it. This is Apple's supported mechanism and is idempotent.
+          sudo xcodebuild -downloadPlatform iOS 2>/dev/null || true
+
+      - name: Ensure a simulator device exists
+        run: |
+          if ! xcrun simctl list devices available | grep -q "iPhone"; then
+            # No simulator devices yet — create one against the newest runtime.
+            RUNTIME_ID=$(xcrun simctl list runtimes | grep -E "iOS" | grep -v unavailable | head -1 | sed -E 's/^([A-Za-z0-9.-]+) .*/\1/')
+            echo "creating simulator with runtime $RUNTIME_ID"
+            xcrun simctl create "iPhone 16" "com.apple.CoreSimulator.SimDeviceType.iPhone-16" "$RUNTIME_ID"
+          fi
+          echo "--- available devices ---"
+          xcrun simctl list devices available | grep -E "iPhone" || true
+
       - name: List schemes
         run: xcodebuild -list -project "$PROJECT"
 
@@ -36,9 +54,14 @@ jobs:
       - name: Resolve simulator
         id: sim
         run: |
+          # Prefer a concrete iPhone name; fall back to the newest available
+          # iPhone simulator if "iPhone 16" is not present on this runner.
           SIM="iPhone 16"
           if ! xcrun simctl list devices available | grep -q "iPhone 16"; then
             SIM=$(xcrun simctl list devices available | grep -E "iPhone" | head -1 | sed -E 's/^[[:space:]]*(.*) \(.*/\1/')
+            if [ -z "$SIM" ]; then
+              SIM=$(xcrun simctl list devices available | grep -E "iPhone" | head -1 | sed -E 's/^[[:space:]]*(.*) \([0-9A-F-]*\).*/\1/')
+            fi
           fi
           echo "resolved simulator: $SIM"
           echo "SIM=$SIM" >> "$GITHUB_OUTPUT"
