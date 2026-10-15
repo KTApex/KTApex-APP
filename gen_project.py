@@ -177,7 +177,10 @@ def cfg(cid, name, settings):
     A(f"\t\t{cid} = {{isa = XCBuildConfiguration; buildSettings = {{{settings}}}; name = {name}; }};")
 
 common_app = "ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = MyVault/MyVault.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = \"$(DEVELOPMENT_TEAM)\"; INFOPLIST_FILE = MyVault/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = \"$(BUNDLE_IDENTIFIER)\"; PRODUCT_NAME = MyVault; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; SWIFT_EMIT_LOC_STRINGS = NO; TARGETED_DEVICE_FAMILY = \"1,2\";"
-cfg(cfg_app_dbg, "Debug", common_app + " CODE_SIGN_IDENTITY = \"Apple Development\"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = \"-Onone\";")
+# ENABLE_TESTABILITY is required for `@testable import MyVault` in MyVaultTests:
+# without it the app module is compiled without -enable-testing and every test
+# target fails with "module 'MyVault' was not compiled for testing".
+cfg(cfg_app_dbg, "Debug", common_app + " CODE_SIGN_IDENTITY = \"Apple Development\"; ENABLE_TESTABILITY = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = \"-Onone\";")
 cfg(cfg_app_rel, "Release", common_app + " CODE_SIGN_IDENTITY = \"Apple Distribution\"; SWIFT_OPTIMIZATION_LEVEL = \"-O\";")
 cfg(cfg_tests_dbg, "Debug", "BUNDLE_LOADER = \"$(TEST_HOST)\"; CODE_SIGN_STYLE = Automatic; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = \"$(BUNDLE_IDENTIFIER)Tests\"; PRODUCT_NAME = MyVaultTests; SWIFT_VERSION = 5.9; TEST_HOST = \"$(BUILT_PRODUCTS_DIR)/MyVault.app/MyVault\";")
 cfg(cfg_tests_rel, "Release", "BUNDLE_LOADER = \"$(TEST_HOST)\"; CODE_SIGN_STYLE = Automatic; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = \"$(BUNDLE_IDENTIFIER)Tests\"; PRODUCT_NAME = MyVaultTests; SWIFT_VERSION = 5.9; TEST_HOST = \"$(BUILT_PRODUCTS_DIR)/MyVault.app/MyVault\";")
