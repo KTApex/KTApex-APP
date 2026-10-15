@@ -34,7 +34,7 @@ struct MediaViewerView: View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
-                if let item {
+                if item != nil {
                     TabView(selection: $index) {
                         ForEach(items.indices, id: \.self) { i in
                             MediaPageView(media: items[i])
@@ -142,6 +142,7 @@ private struct MediaPageView: View {
         .onDisappear { cleanupTempVideo() }
     }
 
+    @MainActor
     private func load() async {
         guard image == nil, videoURL == nil else { return }
         do {
@@ -149,16 +150,17 @@ private struct MediaPageView: View {
             if media.isVideo {
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
-                await MainActor.run { videoURL = url }
+                videoURL = url
             } else {
                 guard let img = UIImage(data: data) else {
-                    await MainActor.run { error = "This photo could not be decrypted." }
+                    error = "This photo could not be decrypted."
                     return
                 }
-                await MainActor.run { image = img }
+                image = img
             }
         } catch {
-            await MainActor.run { error = "This media could not be decrypted." }
+            let message = "This media could not be decrypted."
+            self.error = message
         }
     }
 

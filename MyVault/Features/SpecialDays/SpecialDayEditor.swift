@@ -35,30 +35,8 @@ struct SpecialDayEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Event") {
-                    TextField("Title", text: $title).accessibilityLabel("Event title")
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Picker("Type", selection: $type) {
-                        ForEach(SpecialDayType.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                    }
-                    Toggle("Repeats yearly", isOn: $repeatsYearly)
-                    TextField("Notes (optional)", text: $notes, axis: .vertical)
-                }
-                Section("Reminders") {
-                    ForEach(options, id: \.self) { d in
-                        Toggle(remindLabel(d), isOn: Binding(
-                            get: { reminderDays.contains(d) },
-                            set: { on in on ? reminderDays.insert(d) : reminderDays.remove(d) }
-                        ))
-                    }
-                    DatePicker("Reminder time", selection: Binding(
-                        get: { Calendar.current.date(from: DateComponents(hour: hour, minute: minute)) ?? Date() },
-                        set: {
-                            hour = Calendar.current.component(.hour, from: $0)
-                            minute = Calendar.current.component(.minute, from: $0)
-                        }
-                    ), displayedComponents: .hourAndMinute)
-                }
+                eventSection
+                reminderSection
                 if let error {
                     Section { Text(error).foregroundStyle(.red) }
                 }
@@ -70,6 +48,51 @@ struct SpecialDayEditor: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Save") { save() } }
             }
         }
+    }
+
+    @ViewBuilder
+    private var eventSection: some View {
+        Section("Event") {
+            TextField("Title", text: $title)
+                .accessibilityLabel("Event title")
+            DatePicker("Date", selection: $date, displayedComponents: .date)
+            Picker("Type", selection: $type) {
+                ForEach(SpecialDayType.allCases, id: \.self) { t in
+                    Text(t.displayName).tag(t)
+                }
+            }
+            Toggle("Repeats yearly", isOn: $repeatsYearly)
+            TextField("Notes (optional)", text: $notes, axis: .vertical)
+        }
+    }
+
+    @ViewBuilder
+    private var reminderSection: some View {
+        Section("Reminders") {
+            ForEach(options, id: \.self) { d in
+                Toggle(remindLabel(d), isOn: reminderBinding(for: d))
+            }
+            DatePicker(
+                "Reminder time",
+                selection: Binding<Date>(
+                    get: { Calendar.current.date(from: DateComponents(hour: hour, minute: minute)) ?? Date() },
+                    set: { newValue in
+                        hour = Calendar.current.component(.hour, from: newValue)
+                        minute = Calendar.current.component(.minute, from: newValue)
+                    }
+                ),
+                displayedComponents: .hourAndMinute
+            )
+        }
+    }
+
+    private func reminderBinding(for day: Int) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { reminderDays.contains(day) },
+            set: { isOn in
+                if isOn { reminderDays.insert(day) } else { reminderDays.remove(day) }
+            }
+        )
     }
 
     private func remindLabel(_ d: Int) -> String {
