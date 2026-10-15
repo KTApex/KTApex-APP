@@ -51,7 +51,10 @@ final class EncryptionTests: XCTestCase {
         let data = Data("truncation".utf8)
         let key = SymmetricKey(size: .bits256)
         let sealed = try AES.GCM.seal(data, using: key)
+        // Drop the trailing 16-byte authentication tag. The combined box is still
+        // long enough to construct, so the failure surfaces at `open` (tag check).
         let truncated = sealed.combined!.dropLast(16)
-        XCTAssertThrowsError(try AES.GCM.SealedBox(combined: Data(truncated)))
+        let box = try AES.GCM.SealedBox(combined: Data(truncated))
+        XCTAssertThrowsError(try AES.GCM.open(box, using: key))
     }
 }

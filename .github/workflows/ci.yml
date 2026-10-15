@@ -72,8 +72,8 @@ jobs:
           name: build-log
           path: build.log
 
-      - name: Run unit and UI tests
-        id: tests
+      - name: Run unit tests
+        id: unit_tests
         continue-on-error: true
         run: |
           set -o pipefail
@@ -83,36 +83,67 @@ jobs:
             -configuration Debug \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath DerivedData \
-            -resultBundlePath TestResults.xcresult \
+            -only-testing:MyVaultTests \
+            -resultBundlePath UnitTests.xcresult \
             BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee test.log
+            2>&1 | tee unit-test.log
 
-      - name: Show test failures
-        if: steps.tests.outcome == 'failure'
+      - name: Show unit test failures
+        if: steps.unit_tests.outcome == 'failure'
         run: |
-          echo "=========== TEST FAILURES ==========="
-          grep -nE "error:|failed|Failing tests|XCTAssert|Test Case .* failed|\\*\\* TEST FAILED" test.log || true
-          echo ""
+          echo "=========== UNIT TEST FAILURES ==========="
+          grep -nE "error:|XCTAssert|Test Case .* failed|failed \\(|\\*\\* TEST FAILED" unit-test.log || true
           echo "=========== LAST 120 LINES ==========="
-          tail -n 120 test.log
+          tail -n 120 unit-test.log
           echo "====================================="
 
-      - name: Fail if tests failed
-        if: steps.tests.outcome == 'failure'
+      - name: Run UI tests
+        id: ui_tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath DerivedData \
+            -only-testing:MyVaultUITests \
+            -resultBundlePath UITests.xcresult \
+            BUNDLE_IDENTIFIER="${{ steps.bundle.outputs.BUNDLE_IDENTIFIER }}" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee ui-test.log
+
+      - name: Show UI test failures
+        if: steps.ui_tests.outcome == 'failure'
+        run: |
+          echo "=========== UI TEST FAILURES ==========="
+          grep -nE "error:|XCTAssert|Test Case .* failed|failed \\(|\\*\\* TEST FAILED" ui-test.log || true
+          echo "=========== LAST 120 LINES ==========="
+          tail -n 120 ui-test.log
+          echo "==================================="
+
+      - name: Fail if any tests failed
+        if: steps.unit_tests.outcome == 'failure' || steps.ui_tests.outcome == 'failure'
         run: exit 1
 
-      - name: Upload test log
+      - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-log
-          path: test.log
+          name: test-logs
+          path: |
+            unit-test.log
+            ui-test.log
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: TestResults.xcresult
+          path: |
+            UnitTests.xcresult
+            UITests.xcresult
