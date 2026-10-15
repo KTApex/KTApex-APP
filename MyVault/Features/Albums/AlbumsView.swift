@@ -51,32 +51,33 @@ struct AlbumsView: View {
                 }
             }
             .navigationTitle("Albums")
-        .toolbar {
-            Button { showingNew = true } label: { Image(systemName: "plus") }
-                .accessibilityLabel("New album")
-        }
-        .sheet(isPresented: $showingNew) {
-            NavigationStack {
-                Form { TextField("Album name", text: $name) }
-                    .navigationTitle("New Album")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNew = false } }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Create") {
-                                context.insert(VaultAlbum(name: name)); try? context.save()
-                                name = ""; showingNew = false; Haptics.success()
-                            }.disabled(name.isBlank)
+            .toolbar {
+                Button { showingNew = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("New album")
+            }
+            .sheet(isPresented: $showingNew) {
+                NavigationStack {
+                    Form { TextField("Album name", text: $name) }
+                        .navigationTitle("New Album")
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNew = false } }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Create") {
+                                    context.insert(VaultAlbum(name: name)); try? context.save()
+                                    name = ""; showingNew = false; Haptics.success()
+                                }.disabled(name.isBlank)
+                            }
                         }
-                    }
+                }
+                .presentationDetents([.medium])
             }
-            .presentationDetents([.medium])
-        }
-        .alert("Rename Album", isPresented: renameBinding) {
-            TextField("Name", text: $renameText)
-            Button("Save") {
-                renaming?.name = renameText; try? context.save(); renaming = nil; Haptics.success()
+            .alert("Rename Album", isPresented: renameBinding) {
+                TextField("Name", text: $renameText)
+                Button("Save") {
+                    renaming?.name = renameText; try? context.save(); renaming = nil; Haptics.success()
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
             }
-            Button("Cancel", role: .cancel) { renaming = nil }
         }
     }
 
