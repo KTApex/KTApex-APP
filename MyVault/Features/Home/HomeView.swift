@@ -10,9 +10,10 @@ struct HomeView: View {
     @Query(sort: \VaultMedia.createdAt, order: .reverse) private var media: [VaultMedia]
     @Query(sort: \SpecialDay.date) private var events: [SpecialDay]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var importer = ImportCoordinator()
     @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var isImporting = false
-    @State private var importError: String?
+    @State private var showingPicker = false
+    @State private var notice: ImportCoordinator.Notice?
 
     private var greeting: String {
         let h = Calendar.current.component(.hour, from: Date())
@@ -73,15 +74,19 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Quick Actions").font(MVFont.headline).padding(.horizontal)
                         HStack(spacing: 12) {
-                            PhotosPicker(selection: $pickerItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
-                                QuickActionLabel(symbol: "plus", title: "Add Photos")
-                            }
+                            QuickAction(symbol: "plus", title: "Add Photos") { beginImport() }
                             QuickAction(symbol: "heart", title: "Special Day") { appState.selectedTab = .specialDays }
                             QuickAction(symbol: "folder", title: "Album") { appState.selectedTab = .vault }
                         }
                         .padding(.horizontal)
-                        if isImporting {
-                            ProgressView("Encrypting…").padding(.horizontal)
+                        if importer.isWorking {
+                            MVProgressCard(
+                                title: importer.workingLabel,
+                                detail: "Every item is encrypted and verified before it counts as imported.",
+                                progress: importer.progress,
+                                onCancel: importer.canCancel ? { importer.cancel() } : nil
+                            )
+                            .padding(.horizontal)
                         }
                     }
 
@@ -103,49 +108,63 @@ struct HomeView: View {
                 .padding(.vertical)
             }
             .navigationTitle("Home")
-            .onChange(of: pickerItems) { _, items in importItems(items) }
-            .alert("Import failed", isPresented: importErrorBinding) {
-                Button("OK") { importError = nil }
-            } message: {
-                Text(importError ?? "")
+            .photosPicker(isPresented: $showingPicker, selection: $pickerItems, maxSelectionCount: 50, matching: .any(of: [.images, .videos]))
+            .onChange(of: pickerItems) { _, items in
+                guard !items.isEmpty else { return }
+                importer.start(items, context: context, album: nil)
+                pickerItems = []
+            }
+            .onChange(of: importer.notice) { _, newValue in
+                if let newValue { notice = newValue }
+            }
+            .confirmationDialog(
+                "Remove originals from Photos?",
+                isPresented: removalBinding,
+                titleVisibility: .visible,
+                presenting: importer.removalRequest
+            ) { request in
+                Button(request.count == 1 ? "Remove Original" : "Remove \(request.count) Originals", role: .destructive) {
+                    importer.confirmRemoval()
+                }
+                Button("Keep in Photos", role: .cancel) { importer.keepOriginals() }
+            } message: { request in
+                Text("\(request.count) \(request.count == 1 ? "item was" : "items were") encrypted into your vault and verified. The originals stay in Photos unless you remove them.")
+            }
+            .alert(notice?.title ?? "", isPresented: noticeBinding, presenting: notice) { value in
+                if let actionTitle = value.actionTitle {
+                    Button(actionTitle) {
+                        importer.performNoticeAction()
+                        notice = nil
+                    }
+                }
+                Button("OK", role: .cancel) {
+                    importer.dismissNotice()
+                    notice = nil
+                }
+            } message: { value in
+                Text(value.message)
             }
         }
     }
 
-    private var importErrorBinding: Binding<Bool> {
-        Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
+    private var removalBinding: Binding<Bool> {
+        Binding(
+            get: { importer.removalRequest != nil },
+            set: { presented in
+                guard !presented, importer.removalRequest != nil else { return }
+                importer.keepOriginals()
+            }
+        )
     }
 
-    private func importItems(_ items: [PhotosPickerItem]) {
-        guard !items.isEmpty else { return }
-        isImporting = true
+    private var noticeBinding: Binding<Bool> {
+        Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })
+    }
+
+    private func beginImport() {
         Task {
-            for item in items {
-                do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                    let isVideo = UIImage(data: data) == nil
-                    let stored = try VaultStorageService.shared.storeEncrypted(data: data)
-                    let hash = EncryptionService.sha256(data)
-                    await MainActor.run {
-                        let m = VaultMedia(
-                            fileName: "Import \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
-                            encryptedFileName: stored,
-                            mediaType: isVideo ? "video" : "photo",
-                            fileSize: data.count,
-                            contentHash: hash
-                        )
-                        context.insert(m)
-                    }
-                } catch {
-                    await MainActor.run { importError = "An item could not be imported." }
-                }
-            }
-            await MainActor.run {
-                try? context.save()
-                isImporting = false
-                pickerItems = []
-                Haptics.success()
-            }
+            await importer.prepareForImport()
+            showingPicker = true
         }
     }
 }

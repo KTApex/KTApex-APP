@@ -3,351 +3,622 @@ import SwiftData
 import PhotosUI
 import UIKit
 
+/// The vault gallery.
+///
+/// Layout is a `LazyVGrid` of 2–5 columns with day/month/year grouping, and every
+/// expensive step (decode, encrypt, decrypt for sharing) is deliberately off the
+/// main actor. The destructive Photos operation — removing originals — is offered
+/// only after `ImportCoordinator` has verified the encrypted copy, and only after
+/// an explicit confirmation.
 struct VaultView: View {
     @Environment(\.modelContext) private var context
+    @EnvironmentObject private var appState: AppState
     @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
     @Query(sort: \VaultMedia.createdAt, order: .reverse) private var media: [VaultMedia]
+
+    @StateObject private var importer = ImportCoordinator()
+
     @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var isImporting = false
-    @State private var importProgress: Double = 0
-    @State private var importError: String?
+    @State private var showingPicker = false
     @State private var searchText = ""
     @State private var filter: MediaFilter = .all
-    @State private var selectedAlbum: VaultAlbum?
-    @State private var showingNewAlbum = false
-    @State private var newAlbumName = ""
+    @State private var sortOrder: GallerySort = .newest
+    @State private var grouping: GalleryGrouping = .day
+    @AppStorage("mv.galleryColumns") private var columnCount = 3
+    @State private var selectedAlbumID: String?
+
     @State private var selection = Set<String>()
     @State private var isSelecting = false
     @State private var viewerItem: VaultMedia?
-    @State private var sortOrder: SortOrder = .newest
-    @State private var showPicker = false
-    @State private var importedOriginals: [String] = []
-    @State private var showingRemoveOriginals = false
-    @State private var exportError: String?
 
-    enum MediaFilter: String, CaseIterable { case all, photos, videos, favorites }
-    enum SortOrder: String, CaseIterable { case newest, oldest, largest, smallest }
+    @State private var shareBundle: ShareService.Prepared?
+    @State private var alertItem: VaultAlert?
+
+    @State private var showingNewAlbum = false
+    @State private var newAlbumName = ""
+    @State private var showingTrash = false
+    @State private var showingAlbums = false
+
+    /// One alert channel for the whole screen. Presenting two independent alerts
+    /// from the same view is unreliable, so importer notices and local failures are
+    /// funnelled here.
+    struct VaultAlert: Identifiable {
+        let id = UUID()
+        var title: String
+        var message: String
+        var actionTitle: String? = nil
+        var action: (() -> Void)? = nil
+        var isError: Bool = false
+    }
+
+    // MARK: - Derived data
+
+    private var selectedAlbum: VaultAlbum? {
+        guard let selectedAlbumID else { return nil }
+        return albums.first { $0.id == selectedAlbumID }
+    }
 
     private var visibleMedia: [VaultMedia] {
-        var list = media.filter { !$0.isInTrash }
-        if let album = selectedAlbum { list = list.filter { $0.album?.id == album.id } }
-        switch filter {
-        case .photos: list = list.filter { !$0.isVideo }
-        case .videos: list = list.filter(\.isVideo)
-        case .favorites: list = list.filter(\.isFavorite)
-        case .all: break
-        }
-        if !searchText.isBlank {
-            list = list.filter { $0.fileName.localizedCaseInsensitiveContains(searchText) }
-        }
-        switch sortOrder {
-        case .newest: list.sort { $0.createdAt > $1.createdAt }
-        case .oldest: list.sort { $0.createdAt < $1.createdAt }
-        case .largest: list.sort { $0.fileSize > $1.fileSize }
-        case .smallest: list.sort { $0.fileSize < $1.fileSize }
-        }
-        return list
+        GalleryComposer.sort(
+            GalleryComposer.filter(media, search: searchText, filter: filter, album: selectedAlbum),
+            by: sortOrder
+        )
     }
+
+    private var sections: [GallerySection] {
+        GalleryComposer.sections(visibleMedia, grouping: grouping)
+    }
+
+    private var selectedMedia: [VaultMedia] {
+        media.filter { selection.contains($0.id) }
+    }
+
+    private var isFiltered: Bool {
+        filter != .all || selectedAlbum != nil || !searchText.isBlank
+    }
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Filter", selection: $filter) {
-                    ForEach(MediaFilter.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-
-                if isImporting {
-                    VStack(spacing: 8) {
-                        ProgressView(value: importProgress) { Text("Importing & encrypting…") }
-                    }
-                    .padding()
-                }
-
-                if visibleMedia.isEmpty && !isImporting {
-                    MVEmptyState(
-                        symbol: "photo.stack",
-                        title: "No private memories yet",
-                        subtitle: "Add your first photo to start your encrypted vault.",
-                        actionTitle: "Import Photos",
-                        action: { showPicker = true }
-                    )
+            Group {
+                if visibleMedia.isEmpty {
+                    emptyState
                 } else {
-                    MediaGrid(items: visibleMedia, selection: $selection, isSelecting: $isSelecting) { item in
-                        viewerItem = item
-                    }
+                    GalleryGrid(
+                        sections: sections,
+                        columnCount: columnCount,
+                        isSelecting: isSelecting,
+                        selection: $selection,
+                        onOpen: { viewerItem = $0 },
+                        onToggleSelection: { toggleSelection($0) }
+                    )
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) { topBanner }
+            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
             .navigationTitle("Vault")
-            .searchable(text: $searchText, prompt: "Search vault")
-            .photosPicker(isPresented: $showPicker, selection: $pickerItems, matching: .any(of: [.images, .videos]))
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(isSelecting ? "Done" : "Select") {
-                        Haptics.selection()
-                        isSelecting.toggle()
-                        if !isSelecting { selection.removeAll() }
-                    }
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    PhotosPicker(selection: $pickerItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel("Import photos")
-                    Menu {
-                        Picker("Sort", selection: $sortOrder) {
-                            ForEach(SortOrder.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                        }
-                        Button("New Album") { showingNewAlbum = true }
-                        if !albums.isEmpty {
-                            Menu("Filter by Album") {
-                                Button("All Albums") { selectedAlbum = nil }
-                                ForEach(albums) { a in Button(a.name) { selectedAlbum = a } }
-                            }
-                        }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                }
-                if isSelecting && !selection.isEmpty {
-                    ToolbarItem(placement: .bottomBar) {
-                        HStack {
-                            Button("Export") { exportSelected() }
-                            if !albums.isEmpty {
-                                Menu("Move to") {
-                                    ForEach(albums) { a in
-                                        Button(a.name) { moveSelected(to: a) }
-                                    }
-                                }
-                            }
-                            Spacer()
-                            Button("Trash", role: .destructive) { trashSelected() }
-                        }
-                    }
-                }
-            }
-            .sheet(isPresented: $showingNewAlbum) {
-                NavigationStack {
-                    Form {
-                        TextField("Album name", text: $newAlbumName)
-                            .accessibilityLabel("Album name")
-                    }
-                    .navigationTitle("New Album")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNewAlbum = false } }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Create") { createAlbum() }.disabled(newAlbumName.isBlank)
-                        }
-                    }
-                }
-                .presentationDetents([.medium])
-            }
-            .fullScreenCover(isPresented: viewerBinding) {
-                if let item = viewerItem {
-                    MediaViewerView(items: visibleMedia, selectedID: item.id)
-                }
-            }
-            .onChange(of: pickerItems) { _, items in importItems(items) }
-            .alert("Import failed", isPresented: importErrorBinding) {
-                Button("OK") { importError = nil }
-            } message: {
-                Text(importError ?? "")
-            }
-            .alert("Export failed", isPresented: exportErrorBinding) {
-                Button("OK") { exportError = nil }
-            } message: {
-                Text(exportError ?? "")
+            .navigationDestination(isPresented: $showingTrash) { TrashView() }
+            .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
+            .searchable(text: $searchText, prompt: "Photos, videos, albums, dates")
+            .photosPicker(
+                isPresented: $showingPicker,
+                selection: $pickerItems,
+                maxSelectionCount: 50,
+                matching: .any(of: [.images, .videos])
+            )
+            .toolbar { toolbarContent }
+            .sheet(isPresented: $showingNewAlbum) { newAlbumSheet }
+            .sheet(isPresented: viewerBinding) {
+                MediaViewerView(items: visibleMedia, selectedID: viewerItem?.id)
             }
             .confirmationDialog(
                 "Remove originals from Photos?",
-                isPresented: $showingRemoveOriginals,
-                titleVisibility: .visible
-            ) {
-                Button("Remove Originals", role: .destructive) { removeOriginalAssets() }
-                Button("Keep Originals", role: .cancel) {}
-            } message: {
-                Text("The original items will be removed from your Photos library after confirmation.")
+                isPresented: removalBinding,
+                titleVisibility: .visible,
+                presenting: importer.removalRequest
+            ) { request in
+                Button(removalButtonTitle(request), role: .destructive) { importer.confirmRemoval() }
+                Button("Keep in Photos", role: .cancel) { importer.keepOriginals() }
+            } message: { request in
+                Text(removalMessage(request))
+            }
+            .alert(
+                alertItem?.title ?? "",
+                isPresented: alertBinding,
+                presenting: alertItem
+            ) { item in
+                if let actionTitle = item.actionTitle {
+                    Button(actionTitle) {
+                        item.action?()
+                        alertItem = nil
+                        importer.dismissNotice()
+                    }
+                }
+                Button("OK", role: .cancel) {
+                    alertItem = nil
+                    importer.dismissNotice()
+                }
+            } message: { item in
+                Text(item.message)
+            }
+            .vaultShareSheet(prepared: $shareBundle) { skipped in
+                alertItem = VaultAlert(
+                    title: "Some items were not shared",
+                    message: "These items could not be decrypted, so they were left out: \(skipped.prefix(5).joined(separator: ", "))\(skipped.count > 5 ? " and \(skipped.count - 5) more" : "").",
+                    isError: true
+                )
+            }
+            .onChange(of: pickerItems) { _, items in
+                guard !items.isEmpty else { return }
+                importer.start(items, context: context, album: selectedAlbum)
+                pickerItems = []
+            }
+            .onChange(of: importer.notice) { _, notice in
+                guard let notice else { return }
+                // The importer keeps its notice until the user answers, because the
+                // permission action reads it back when it runs.
+                alertItem = VaultAlert(
+                    title: notice.title,
+                    message: notice.message,
+                    actionTitle: notice.actionTitle,
+                    action: notice.action == nil ? nil : { importer.performNoticeAction() },
+                    isError: notice.isError
+                )
+            }
+            .onChange(of: visibleMedia.count) { _, _ in clampSelection() }
+        }
+    }
+
+    // MARK: - Sections of the screen
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if isFiltered {
+            MVEmptyState(
+                symbol: "magnifyingglass",
+                title: "No matches",
+                subtitle: filter == .all
+                    ? "Nothing in the vault matches this search or album."
+                    : filter.emptyMessage,
+                actionTitle: "Clear Filters",
+                action: clearFilters
+            )
+        } else {
+            MVEmptyState(
+                symbol: "photo.stack",
+                title: "No private memories yet",
+                subtitle: "Photos and videos are encrypted on this device before they are stored.",
+                actionTitle: "Import Photos",
+                action: beginImport
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var topBanner: some View {
+        VStack(spacing: 8) {
+            if importer.isWorking {
+                MVProgressCard(
+                    title: importer.workingLabel,
+                    detail: "Items already verified stay in the vault.",
+                    progress: importer.progress,
+                    onCancel: importer.canCancel ? { importer.cancel() } : nil
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            }
+            if isFiltered && !visibleMedia.isEmpty {
+                activeFilterBar
             }
         }
+        .background {
+            if importer.isWorking || (isFiltered && !visibleMedia.isEmpty) {
+                Rectangle().fill(.bar)
+            }
+        }
+    }
+
+    private var activeFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if filter != .all {
+                    MVFilterChip(title: filter.title, symbol: filter.symbol) { filter = .all }
+                }
+                if let album = selectedAlbum {
+                    MVFilterChip(title: album.name, symbol: "rectangle.stack") { selectedAlbumID = nil }
+                }
+                if !searchText.isBlank {
+                    MVFilterChip(title: searchText, symbol: "magnifyingglass") { searchText = "" }
+                }
+                MVFilterChip(title: "Clear all", symbol: "xmark.circle") { clearFilters() }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+    }
+
+    @ViewBuilder
+    private var selectionBar: some View {
+        if isSelecting {
+            VStack(spacing: 0) {
+                Divider()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 20) {
+                        selectionAction("Share", "square.and.arrow.up") { shareSelection() }
+                        selectionAction("Favorite", "heart") { favoriteSelection() }
+                        albumMenu
+                        if selectedAlbum != nil {
+                            selectionAction("Remove", "rectangle.stack.badge.minus") { removeSelectionFromAlbum() }
+                        }
+                        selectionAction("Trash", "trash") { trashSelection() }
+                        selectionAction(
+                            selection.count == visibleMedia.count ? "Deselect" : "Select All",
+                            "checkmark.circle"
+                        ) { toggleSelectAll() }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .background(.bar)
+            }
+            .transition(.move(edge: .bottom))
+        }
+    }
+
+    private func selectionAction(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.title3)
+                Text(title).font(.caption2)
+            }
+            .frame(minWidth: 52)
+        }
+        .buttonStyle(.plain)
+        .disabled(selection.isEmpty)
+        .opacity(selection.isEmpty ? 0.4 : 1)
+        .accessibilityLabel(title)
+    }
+
+    private var albumMenu: some View {
+        Menu {
+            if albums.isEmpty {
+                Text("No albums yet")
+            } else {
+                ForEach(albums) { album in
+                    Button(album.name) { moveSelection(to: album) }
+                }
+            }
+            Divider()
+            Button {
+                newAlbumName = ""
+                showingNewAlbum = true
+            } label: {
+                Label("New Album…", systemImage: "folder.badge.plus")
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: "rectangle.stack.badge.plus").font(.title3)
+                Text("Album").font(.caption2)
+            }
+            .frame(minWidth: 52)
+        }
+        .disabled(selection.isEmpty)
+        .opacity(selection.isEmpty ? 0.4 : 1)
+        .accessibilityLabel("Add to album")
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if !visibleMedia.isEmpty {
+                Button(isSelecting ? "Done" : "Select") { toggleSelecting() }
+                    .accessibilityLabel(isSelecting ? "Finish selecting" : "Select items")
+            }
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button(action: beginImport) {
+                Image(systemName: "plus")
+            }
+            .accessibilityLabel("Import photos or videos")
+            Menu { moreMenu } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .accessibilityLabel("More options")
+        }
+    }
+
+    @ViewBuilder
+    private var moreMenu: some View {
+        Section("Layout") {
+            Picker("Columns", selection: $columnCount) {
+                Text("2 Columns").tag(2)
+                Text("3 Columns").tag(3)
+                Text("4 Columns").tag(4)
+                Text("5 Columns").tag(5)
+            }
+            Picker("Grouping", selection: $grouping) {
+                ForEach(GalleryGrouping.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+        }
+        Section("Show") {
+            Picker("Filter", selection: $filter) {
+                ForEach(MediaFilter.allCases) { option in
+                    Label(option.title, systemImage: option.symbol).tag(option)
+                }
+            }
+            Picker("Sort", selection: $sortOrder) {
+                ForEach(GallerySort.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            if !albums.isEmpty {
+                Picker("Album", selection: albumBinding) {
+                    Text("All Albums").tag(String?.none)
+                    ForEach(albums) { album in
+                        Text(album.name).tag(String?.some(album.id))
+                    }
+                }
+            }
+        }
+        Section("Albums") {
+            Button { showingAlbums = true } label: { Label("Browse Albums", systemImage: "rectangle.stack") }
+            Button { newAlbumName = ""; showingNewAlbum = true } label: {
+                Label("New Album", systemImage: "folder.badge.plus")
+            }
+        }
+        Section {
+            Button { showingTrash = true } label: { Label("Recently Deleted", systemImage: "trash") }
+            Button {
+                Haptics.tap()
+                appState.lock()
+            } label: {
+                Label("Lock Now", systemImage: "lock.fill")
+            }
+        }
+    }
+
+    private var newAlbumSheet: some View {
+        NavigationStack {
+            Form {
+                TextField("Album name", text: $newAlbumName)
+                    .accessibilityLabel("Album name")
+                Text("Adding media to an album never copies it: albums are labels on the encrypted items.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("New Album")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNewAlbum = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { createAlbum() }.disabled(newAlbumName.isBlank)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    // MARK: - Bindings
+
+    private var alertBinding: Binding<Bool> {
+        Binding(get: { alertItem != nil }, set: { if !$0 { alertItem = nil } })
     }
 
     private var viewerBinding: Binding<Bool> {
         Binding(get: { viewerItem != nil }, set: { if !$0 { viewerItem = nil } })
     }
 
-    private var importErrorBinding: Binding<Bool> {
-        Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
+    private var albumBinding: Binding<String?> {
+        Binding(get: { selectedAlbumID }, set: { selectedAlbumID = $0 })
     }
 
-    private var exportErrorBinding: Binding<Bool> {
-        Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })
+    /// Dismissing the dialog without choosing anything means "keep the originals".
+    /// `confirmRemoval` and `keepOriginals` both clear `removalRequest` first, so a
+    /// trailing dismiss cannot overwrite the user's actual choice.
+    private var removalBinding: Binding<Bool> {
+        Binding(
+            get: { importer.removalRequest != nil },
+            set: { presented in
+                guard !presented, importer.removalRequest != nil else { return }
+                importer.keepOriginals()
+            }
+        )
     }
+
+    // MARK: - Import
+
+    private func beginImport() {
+        Haptics.tap()
+        Task {
+            await importer.prepareForImport()
+            showingPicker = true
+        }
+    }
+
+    private func removalButtonTitle(_ request: ImportCoordinator.RemovalRequest) -> String {
+        "Remove \(request.count) Original\(request.count == 1 ? "" : "s")"
+    }
+
+    private func removalMessage(_ request: ImportCoordinator.RemovalRequest) -> String {
+        var message = "\(request.count) \(request.count == 1 ? "item was" : "items were") encrypted into your vault and verified. Removing the originals from Photos moves them to Recently Deleted in Photos, where they stay for 30 days."
+        if request.limitedAccess {
+            message += "\n\nMyVault only has access to the items you allowed in Photos, so any it cannot see will stay in your library."
+        }
+        return message
+    }
+
+    // MARK: - Selection
+
+    private func toggleSelecting() {
+        Haptics.selection()
+        isSelecting.toggle()
+        if !isSelecting { selection.removeAll() }
+    }
+
+    private func toggleSelection(_ item: VaultMedia) {
+        Haptics.selection()
+        if selection.contains(item.id) {
+            selection.remove(item.id)
+        } else {
+            selection.insert(item.id)
+        }
+    }
+
+    private func toggleSelectAll() {
+        Haptics.selection()
+        if selection.count == visibleMedia.count {
+            selection.removeAll()
+        } else {
+            selection = Set(visibleMedia.map(\.id))
+        }
+    }
+
+    private func clearSelection() {
+        selection.removeAll()
+        isSelecting = false
+    }
+
+    private func clampSelection() {
+        let valid = Set(visibleMedia.map(\.id))
+        let trimmed = selection.intersection(valid)
+        if trimmed != selection { selection = trimmed }
+    }
+
+    private func clearFilters() {
+        Haptics.tap()
+        filter = .all
+        selectedAlbumID = nil
+        searchText = ""
+    }
+
+    // MARK: - Album actions
 
     private func createAlbum() {
-        let album = VaultAlbum(name: newAlbumName.trimmingCharacters(in: .whitespaces))
+        let name = newAlbumName.trimmingCharacters(in: .whitespaces)
+        guard !name.isBlank else { return }
+        let album = VaultAlbum(name: name)
         context.insert(album)
-        try? context.save()
-        Haptics.success()
+        do {
+            try context.save()
+            Haptics.success()
+            selectedAlbumID = album.id
+        } catch {
+            context.rollback()
+            alertItem = VaultAlert(title: "Album not created", message: "The album could not be saved. Nothing else was changed.", isError: true)
+        }
         newAlbumName = ""
         showingNewAlbum = false
     }
 
-    private func trashSelected() {
-        for m in media where selection.contains(m.id) {
-            m.isInTrash = true
-            m.trashedAt = Date()
+    private func moveSelection(to album: VaultAlbum) {
+        let items = selectedMedia
+        guard !items.isEmpty else { return }
+        for item in items { item.album = album }
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Album not updated", message: message, isError: true)
         }
-        try? context.save()
         Haptics.success()
-        selection.removeAll()
-        isSelecting = false
+        clearSelection()
     }
 
-    private func moveSelected(to album: VaultAlbum) {
-        for m in media where selection.contains(m.id) {
-            m.album = album
+    private func removeSelectionFromAlbum() {
+        let items = selectedMedia
+        guard !items.isEmpty else { return }
+        for item in items { item.album = nil }
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Album not updated", message: message, isError: true)
         }
-        try? context.save()
         Haptics.success()
-        selection.removeAll()
-        isSelecting = false
+        clearSelection()
     }
 
-    private func exportSelected() {
-        let selected = media.filter { selection.contains($0.id) }
-        Task {
-            for m in selected {
-                do {
-                    let data = try VaultStorageService.shared.loadDecrypted(fileName: m.encryptedFileName)
-                    try await PhotoLibraryService.shared.export(data: data, isVideo: m.isVideo)
-                } catch {
-                    await MainActor.run {
-                        exportError = "One item could not be exported. The rest were kept safe."
-                    }
-                }
-            }
-            await MainActor.run {
-                Haptics.success()
-                selection.removeAll()
-                isSelecting = false
-            }
+    // MARK: - Media actions
+
+    private func favoriteSelection() {
+        let items = selectedMedia
+        guard !items.isEmpty else { return }
+        // Toggle against the first item so a mixed selection becomes uniform
+        // instead of flipping item by item.
+        let target = !(items.first?.isFavorite ?? false)
+        for item in items { item.isFavorite = target }
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Favorites not updated", message: message, isError: true)
         }
+        Haptics.success()
     }
 
-    private func removeOriginalAssets() {
-        let ids = importedOriginals
-        importedOriginals = []
+    private func trashSelection() {
+        let items = selectedMedia
+        guard !items.isEmpty else { return }
+        for item in items {
+            item.isInTrash = true
+            item.trashedAt = Date()
+        }
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Items not deleted", message: message, isError: true)
+        }
+        Haptics.success()
+        clearSelection()
+    }
+
+    private func shareSelection() {
+        let items = selectedMedia
+        guard !items.isEmpty else { return }
         Task {
             do {
-                try await PhotoLibraryService.shared.deleteAssets(localIdentifiers: ids)
-                await MainActor.run { Haptics.success() }
+                shareBundle = try await ShareService.shared.prepare(items)
             } catch {
-                await MainActor.run {
-                    exportError = "Originals could not be removed. They remain in your Photos library."
-                }
-            }
-        }
-    }
-
-    private func importItems(_ items: [PhotosPickerItem]) {
-        guard !items.isEmpty else { return }
-        isImporting = true
-        importProgress = 0
-        Task {
-            var done = 0
-            var originals: [String] = []
-            for item in items {
-                do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                    // PhotosPicker transfers raw bytes; if they decode as an image it is a photo, otherwise video.
-                    let isVideo = UIImage(data: data) == nil
-                    let fileName = "Import \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))"
-                    let stored = try VaultStorageService.shared.storeEncrypted(data: data)
-                    let hash = EncryptionService.sha256(data)
-                    await MainActor.run {
-                        let m = VaultMedia(
-                            fileName: fileName,
-                            encryptedFileName: stored,
-                            mediaType: isVideo ? "video" : "photo",
-                            fileSize: data.count,
-                            contentHash: hash
-                        )
-                        m.album = selectedAlbum
-                        context.insert(m)
-                    }
-                    // Only offer to remove the Photos original once the encrypted copy
-                    // is safely on disk; otherwise a failed import could prompt the user
-                    // to delete an item that was never imported.
-                    if let assetID = item.itemIdentifier { originals.append(assetID) }
-                } catch {
-                    await MainActor.run { importError = "One item could not be imported. The rest were kept safe." }
-                }
-                done += 1
-                await MainActor.run { importProgress = Double(done) / Double(items.count) }
-            }
-            await MainActor.run {
-                try? context.save()
-                isImporting = false
-                pickerItems = []
-                Haptics.success()
-                if !originals.isEmpty {
-                    importedOriginals = originals
-                    showingRemoveOriginals = true
-                }
+                Haptics.error()
+                alertItem = VaultAlert(
+                    title: "Sharing failed",
+                    message: error.localizedDescription + " Nothing was removed from your vault.",
+                    isError: true
+                )
             }
         }
     }
 }
 
-struct MediaGrid: View {
-    let items: [VaultMedia]
-    @Binding var selection: Set<String>
-    @Binding var isSelecting: Bool
-    let onTap: (VaultMedia) -> Void
-
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 2)]
+/// Chip that shows an active filter and clears it when tapped.
+struct MVFilterChip: View {
+    let title: String
+    let symbol: String
+    let action: () -> Void
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(items) { item in
-                    MediaThumb(item: item, selected: selection.contains(item.id))
-                        .onTapGesture {
-                            if isSelecting {
-                                Haptics.selection()
-                                if selection.contains(item.id) { selection.remove(item.id) } else { selection.insert(item.id) }
-                            } else {
-                                onTap(item)
-                            }
-                        }
-                        .accessibilityLabel(item.fileName)
-                }
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.caption2)
+                Text(title).font(.caption).lineLimit(1)
+                Image(systemName: "xmark").font(.caption2)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.15), in: Capsule())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear filter \(title)")
     }
 }
 
-struct MediaThumb: View {
-    let item: VaultMedia
-    let selected: Bool
-    @State private var image: UIImage?
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Rectangle().fill(Color.secondary.opacity(0.15)).aspectRatio(1, contentMode: .fit)
-                .overlay {
-                    if let image { Image(uiImage: image).resizable().scaledToFill() }
-                    else if item.isVideo { Image(systemName: "video.fill").font(.title).foregroundStyle(.secondary) }
-                    else { Image(systemName: "photo").font(.title).foregroundStyle(.secondary) }
-                }
-                .clipped()
-            if item.isFavorite {
-                Image(systemName: "heart.fill").foregroundStyle(.red).padding(6)
-            }
-            if selected {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint).padding(6)
-            }
+extension ModelContext {
+    /// Saves and reports the failure instead of discarding it, so a rejected write
+    /// cannot look like a successful action.
+    func saveReporting(_ onFailure: (String) -> Void) {
+        do {
+            try save()
+        } catch {
+            rollback()
+            onFailure("That change could not be saved, so nothing was modified. Please try again.")
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task { image = ThumbnailCache.shared.thumbnail(for: item) }
     }
 }

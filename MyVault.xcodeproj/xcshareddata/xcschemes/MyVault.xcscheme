@@ -3,21 +3,21 @@
    <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
       <BuildActionEntries>
          <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
-            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="75F981B404254C61A42E6F0A" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/>
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="ECB6244CA0F941F5A15F85D4" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/>
          </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
       <Testables>
-         <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="EA46F6126B3142AF8D3A2E71" BuildableName="MyVaultTests.xctest" BlueprintName="MyVaultTests" ReferencedContainer="container:MyVault.xcodeproj"/></TestableReference>
-         <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E9D7EDF02F254FE8ACF32D27" BuildableName="MyVaultUITests.xctest" BlueprintName="MyVaultUITests" ReferencedContainer="container:MyVault.xcodeproj"/></TestableReference>
+         <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="597A9F2B85434E39B90BF713" BuildableName="MyVaultTests.xctest" BlueprintName="MyVaultTests" ReferencedContainer="container:MyVault.xcodeproj"/></TestableReference>
+         <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="779EC2FD8A13418D9007962C" BuildableName="MyVaultUITests.xctest" BlueprintName="MyVaultUITests" ReferencedContainer="container:MyVault.xcodeproj"/></TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
-      <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="75F981B404254C61A42E6F0A" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/></BuildableProductRunnable>
+      <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="ECB6244CA0F941F5A15F85D4" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/></BuildableProductRunnable>
    </LaunchAction>
    <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES">
-      <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="75F981B404254C61A42E6F0A" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/></BuildableProductRunnable>
+      <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="ECB6244CA0F941F5A15F85D4" BuildableName="MyVault.app" BlueprintName="MyVault" ReferencedContainer="container:MyVault.xcodeproj"/></BuildableProductRunnable>
    </ProfileAction>
    <AnalyzeAction buildConfiguration="Debug"/>
    <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
