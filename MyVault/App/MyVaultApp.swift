@@ -11,9 +11,33 @@ struct MyVaultApp: App {
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([VaultAlbum.self, VaultMedia.self, SpecialDay.self, ReminderConfiguration.self, AppSettings.self, BackupMetadata.self])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        // The store lives in the app's own Application Support directory.
+        //
+        // The target declares an App Group (for the widget's `UserDefaults`), and if
+        // SwiftData is left to pick a location itself it can resolve the store into
+        // that shared container. On a simulator (or any build where the App Group is
+        // not provisioned) that directory does not exist, so opening the store fails
+        // and every `@Query`-backed screen stays blank. Pinning the URL keeps the
+        // vault database in the app sandbox on every device, and the App Group is
+        // used only for the non-sensitive widget summary.
+        let storeURL: URL = {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            return base.appendingPathComponent("MyVault.store")
+        }()
+        // `cloudKitDatabase: .none` is intentional: MyVault is local-only by design,
+        // so the store is never mirrored to iCloud behind the user's back.
+        let config = ModelConfiguration(schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
         do { return try ModelContainer(for: schema, configurations: [config]) }
-        catch { fatalError("Could not create ModelContainer: \(error)") }
+        catch {
+            // A corrupt or unreadable store must not brick the app: fall back to an
+            // in-memory container so the UI still works, and report it in the log.
+            NSLog("MyVault: persistent store unavailable (\\(error)); using in-memory store")
+            let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            do { return try ModelContainer(for: schema, configurations: [memory]) }
+            catch { fatalError("Could not create ModelContainer: \\(error)") }
+        }
     }()
 
     var body: some Scene {
