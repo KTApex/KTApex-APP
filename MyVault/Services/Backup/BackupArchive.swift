@@ -400,33 +400,63 @@ enum BackupCompression {
     /// is produced in 64 KiB chunks and the operation is aborted the moment the
     /// running total passes the cap, so even a ~1000:1 zlib bomb never gets to
     /// allocate more than the limit plus one chunk.
+    ///
+    /// `compression_stream_end` is a C macro in `<compression.h>` and is not
+    /// visible to Swift; `compression_stream_init`/`compression_stream_destroy`
+    /// are. The struct itself has no zero-argument initialiser, so it is created
+    /// with every pointer/size field cleared before being initialised.
     static func decompress(_ data: Data, limit: Int) throws -> Data {
         guard !data.isEmpty, data.count <= limit else { throw BackupError.corrupted }
 
-        var stream = compression_stream()
-        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
+        // `compression_stream` has no zero-argument initialiser and its pointer
+        // fields are non-optional, so the struct is allocated and zeroed the way
+        // the C `compression_stream_init` macro would have done it.
+        let streamPointer = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        streamPointer.initialize(to: compression_stream(
+            dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
+            dst_size: 0,
+            src_ptr: UnsafePointer<UInt8>(bitPattern: 1),
+            src_size: 0,
+            state: nil
+        ))
+        defer {
+            streamPointer.deinitialize(count: 1)
+            streamPointer.deallocate()
+        }
+        guard compression_stream_init(streamPointer, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw BackupError.corrupted
         }
-        defer { compression_stream_end(&stream) }
+        // `compression_stream_destroy` is the Swift-visible teardown; the C macro
+        // `compression_stream_end` is not importable.
+        defer { compression_stream_destroy(streamPointer) }
+        let stream = streamPointer
 
         var output = Data()
         output.reserveCapacity(min(data.count * 4, limit))
         var status = COMPRESSION_STATUS_OK
+        var exceeded = false
         data.withUnsafeBytes { rawBuffer in
-            stream.src_ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            stream.src_size = data.count
+            stream.pointee.src_ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            stream.pointee.src_size = data.count
             let chunk = UnsafeMutablePointer<UInt8>.allocate(capacity: 64 * 1024)
             defer { chunk.deallocate() }
             repeat {
-                stream.dst_ptr = chunk
-                stream.dst_size = 64 * 1024
-                status = compression_stream_process(&stream, COMPRESSION_STREAM_FINALIZE)
-                output.append(chunk, count: 64 * 1024 - stream.dst_size)
-                if output.count > limit { break }
+                stream.pointee.dst_ptr = chunk
+                stream.pointee.dst_size = 64 * 1024
+                status = compression_stream_process(stream, COMPRESSION_STREAM_FINALIZE)
+                output.append(chunk, count: 64 * 1024 - stream.pointee.dst_size)
+                if output.count > limit {
+                    // Stop expanding the moment the cap is passed; the guard below
+                    // rejects the result. Never let a bomb allocate past the limit.
+                    exceeded = true
+                    break
+                }
             } while status == COMPRESSION_STATUS_OK
         }
         // The only acceptable end state is a clean finish at or under the cap.
-        guard status == COMPRESSION_STATUS_END, output.count <= limit else { throw BackupError.corrupted }
+        guard !exceeded, status == COMPRESSION_STATUS_END, output.count <= limit else {
+            throw BackupError.corrupted
+        }
         return output
     }
 }
