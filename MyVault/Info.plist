@@ -53,5 +53,53 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
+    <!-- MyVault's own backup format.
+
+         Declaring this is what makes `.mvbackup` selectable in Files. Without an
+         exported type declaration, iOS cannot resolve the `mvbackup` extension, so
+         the picker shows the file greyed out (or hides it entirely) and
+         `UTType(filenameExtension: "mvbackup")` returns nil.
+
+         `public.data` is declared as the parent so the file is still treated as
+         ordinary data by the system (for example when copying to a Mac), while
+         `CFBundleDocumentTypes` marks it as a document this app can open, which is
+         what allows the file to be tapped in Files and opened "with MyVault". -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.ktapex.myvault.backup</string>
+            <key>UTTypeDescription</key>
+            <string>MyVault Backup</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>mvbackup</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/x-my-vault-backup</string>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>MyVault Backup</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.ktapex.myvault.backup</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

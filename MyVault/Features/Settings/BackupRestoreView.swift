@@ -77,6 +77,9 @@ struct BackupRestoreView: View {
     @State private var showingImporter = false
     @State private var restorePassword = ""
     @State private var selectedBackupURL: URL?
+    /// The name the user saw in Files, shown back to them so it is obvious which
+    /// backup was received.
+    @State private var selectedBackupName: String?
     @State private var inspectedVersion: Int?
     @State private var progress: PortableBackupService.Progress?
     @State private var artifact: PortableBackupService.Artifact?
@@ -101,7 +104,11 @@ struct BackupRestoreView: View {
             }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [.data],
+                // The app's own exported type first, with `public.data` as a fallback
+                // for a backup whose extension was lost in transit. Content is
+                // validated by `PortableBackupService.inspect` immediately after, so
+                // accepting `.data` here cannot let a non-backup through.
+                allowedContentTypes: MyVaultBackupType.importableTypes,
                 allowsMultipleSelection: false
             ) { result in
                 handlePickedFile(result)
@@ -207,7 +214,7 @@ struct BackupRestoreView: View {
         case .restorePassword:
             RestorePasswordSheet(
                 password: $restorePassword,
-                fileName: selectedBackupURL?.lastPathComponent ?? ""
+                fileName: selectedBackupName ?? selectedBackupURL?.lastPathComponent ?? ""
             ) {
                 activeSheet = nil
                 preparePreview()
@@ -268,39 +275,41 @@ struct BackupRestoreView: View {
 
     /// The `fileImporter` completion hands back an array even when only one file can
     /// be chosen, so the first (and only) URL is unwrapped here.
+    ///
+    /// Order of operations, all of it deliberate:
+    /// 1. copy the chosen file into our own scratch space (this is where the
+    ///    security scope is taken and released — see `BackupFileImporter`),
+    /// 2. validate the container header so a newer format is reported as
+    ///    "update the app" instead of "damaged file",
+    /// 3. only then ask for the password.
     private func handlePickedFile(_ result: Result<[URL], Error>) {
         switch result {
         case .failure:
-            alertMessage = "That file could not be opened."
+            alertMessage = "That file could not be opened. Pick the .mvbackup file MyVault created."
         case .success(let urls):
             guard let url = urls.first else {
-                alertMessage = "That file could not be opened."
+                alertMessage = "No file was selected."
                 return
             }
-            // A file chosen in another app's sandbox needs explicit access.
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            // Replace any previous selection *before* staging the new one, so a failed
+            // attempt cannot leave the older copy behind.
+            discardIncomingCopy()
             do {
-                // Container and version checks happen *before* a password is asked
-                // for, so a newer format is reported as "update the app" rather than
-                // as a damaged file.
-                let header = try PortableBackupService.inspect(url)
-                // Copied into scratch space under a name this app controls, so the
-                // security scope is only needed for a moment and a hostile file name
-                // never reaches the file system.
-                let directory = try SecureScratch.makeDirectory(prefix: "incoming")
-                let local: URL
+                let staged = try BackupFileImporter.stageCopy(of: url)
                 do {
-                    local = try SecureScratch.copy(url, named: "incoming.mvbackup", in: directory)
+                    let header = try PortableBackupService.inspect(staged.url)
+                    selectedBackupURL = staged.url
+                    selectedBackupName = staged.originalName
+                    inspectedVersion = Int(header.formatVersion)
+                    restorePassword = ""
+                    activeSheet = .restorePassword
+                    if staged.extensionUnexpected {
+                        alertMessage = "That file does not end in .mvbackup, but it looks like a MyVault backup, so you can still restore it."
+                    }
                 } catch {
-                    SecureScratch.removeDirectory(directory)
+                    staged.discard()
                     throw error
                 }
-                discardIncomingCopy()
-                selectedBackupURL = local
-                inspectedVersion = Int(header.formatVersion)
-                restorePassword = ""
-                activeSheet = .restorePassword
             } catch {
                 Haptics.error()
                 alertMessage = error.localizedDescription
@@ -312,12 +321,16 @@ struct BackupRestoreView: View {
     /// backup does not linger in temporary storage after the sheet is dismissed.
     /// Only ever removes a directory this screen created.
     private func discardIncomingCopy() {
-        guard let url = selectedBackupURL else { return }
+        guard let url = selectedBackupURL else {
+            selectedBackupName = nil
+            return
+        }
         let directory = url.deletingLastPathComponent()
         if directory.lastPathComponent.hasPrefix("incoming-") {
             SecureScratch.removeDirectory(directory)
         }
         selectedBackupURL = nil
+        selectedBackupName = nil
     }
 
     private func preparePreview() {
