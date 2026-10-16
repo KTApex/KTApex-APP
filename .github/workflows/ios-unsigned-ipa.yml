@@ -46,6 +46,14 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Show available simulators and schemes
+        run: |
+          # Prints what the runner actually has, so a destination mismatch is obvious
+          # in the log instead of surfacing as an opaque xcodebuild exit code.
+          xcrun simctl list devices available | sed -n '1,40p'
+          echo "---- schemes ----"
+          xcodebuild -list -project "$PROJECT"
+
       - name: Run unit tests
         id: unit_tests
         continue-on-error: true
@@ -56,7 +64,7 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Debug \
             -destination "platform=iOS Simulator,name=$SIMULATOR_NAME,OS=latest" \
-            -derivedDataPath "$RUNNER_TEMP/TestDerivedData" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -only-testing:MyVaultTests \
             -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
             BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" \
@@ -69,6 +77,11 @@ jobs:
         run: |
           echo "=========== UNIT TEST FAILURES ==========="
           grep -nE "error:|XCTAssert|Test Case .* failed|failed \(|BUILD FAILED|\*\* TEST FAILED" "$RUNNER_TEMP/unit-test.log" || true
+          # Surface the first real diagnostics as check annotations: they are readable
+          # in the Actions UI and through the public check-run API without needing to
+          # sign in and download the log artifact.
+          grep -E "(error|warning): |BUILD FAILED|\*\* TEST FAILED|xcodebuild: error|Unable to find|Simulator|could not be|Code Signing|errSec" "$RUNNER_TEMP/unit-test.log" \
+            | head -10 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 120 LINES ==========="
           tail -n 120 "$RUNNER_TEMP/unit-test.log" || true
           echo "========================================="
@@ -104,6 +117,9 @@ jobs:
         run: |
           echo "=========== BUILD DIAGNOSTICS ==========="
           grep -E "error: |Code Signing|requires a provisioning profile|No profiles|BUILD FAILED|The following build commands failed" "$RUNNER_TEMP/build.log" | head -20 || true
+          # Also mirror the first diagnostics as check annotations.
+          grep -E "(error|warning): |BUILD FAILED|The following build commands failed|xcodebuild: error|Code Signing Error|No profiles for" "$RUNNER_TEMP/build.log" \
+            | head -10 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 60 LINES ==========="
           tail -n 60 "$RUNNER_TEMP/build.log" || true
 
