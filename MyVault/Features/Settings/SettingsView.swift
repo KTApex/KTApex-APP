@@ -80,7 +80,12 @@ struct SettingsView: View {
                     Label("Photos are encrypted with AES-GCM. Keys live in the Keychain.", systemImage: "key.fill")
                 }
                 Section("Backup") {
-                    NavigationLink("iCloud Backup") { BackupSettingsView() }
+                    NavigationLink {
+                        BackupRestoreView()
+                    } label: {
+                        Label("Backup & Restore", systemImage: "lock.doc")
+                    }
+                    NavigationLink("Encrypted iCloud Sync") { BackupSettingsView() }
                 }
                 Section("About") {
                     HStack { Text("Version"); Spacer(); Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0").foregroundStyle(.secondary) }
