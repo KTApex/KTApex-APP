@@ -143,8 +143,10 @@ final class PortableBackupService: ObservableObject {
     ) async throws -> Artifact {
         progress(Progress(stage: .preparing, fraction: 0, detail: nil))
         let plan = try buildPlan(context: context)
+        // A vault with no media files on disk has nothing worth sealing, and the
+        // dedicated case keeps this distinct from a *restore* failure in the UI.
         guard !plan.entries.isEmpty else {
-            throw BackupError.restoreFailed("There is nothing in the vault to back up yet.")
+            throw BackupError.nothingToBackUp
         }
 
         let directory = try SecureScratch.makeDirectory(prefix: "backup")
@@ -364,7 +366,7 @@ final class PortableBackupService: ObservableObject {
     /// Decrypts only the manifest, so the user can see what a backup holds before
     /// committing to a restore.
     func previewRestore(from url: URL, password: String) async throws -> Preview {
-        try await Task.detached(priority: .userInitiated) { () -> Preview in
+        try await Task.detached(priority: .userInitiated) { () throws -> Preview in
             guard let directory = try? SecureScratch.makeDirectory(prefix: "preview") else {
                 throw BackupError.outOfSpace
             }
@@ -473,7 +475,7 @@ final class PortableBackupService: ObservableObject {
         let written = FileNameCollector()
         var encrypted: [EncryptedItem] = []
         do {
-            encrypted = try await Task.detached(priority: .userInitiated) { () -> [EncryptedItem] in
+            encrypted = try await Task.detached(priority: .userInitiated) { () throws -> [EncryptedItem] in
                 var results: [EncryptedItem] = []
                 var seen = existingHashes
                 for (media, stagedURL) in stagedForImport {

@@ -47,20 +47,26 @@ enum BackupCrypto {
         let passwordBytes = Array(password.precomposedStringWithCanonicalMapping.utf8)
         guard !passwordBytes.isEmpty else { throw BackupError.passwordTooShort }
 
-        var derived = [UInt8](repeating: 0, count: keyLength)
+        // Byte counts are read from locals: touching `derived` (or either input
+        // array) inside its own `withUnsafeMutableBufferPointer` body would be an
+        // overlapping access to the same storage.
+        let passwordCount = passwordBytes.count
+        let saltCount = salt.count
+        let outputCount = keyLength
+        var derived = [UInt8](repeating: 0, count: outputCount)
         let status = passwordBytes.withUnsafeBufferPointer { passwordBuffer -> Int32 in
             salt.withUnsafeBytes { saltBuffer -> Int32 in
                 derived.withUnsafeMutableBufferPointer { output -> Int32 in
                     CCKeyDerivationPBKDF(
                         CCPBKDFAlgorithm(kCCPBKDF2),
                         passwordBuffer.baseAddress,
-                        passwordBytes.count,
+                        passwordCount,
                         saltBuffer.bindMemory(to: UInt8.self).baseAddress,
-                        salt.count,
+                        saltCount,
                         CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
                         iterations,
                         output.baseAddress,
-                        derived.count
+                        outputCount
                     )
                 }
             }
