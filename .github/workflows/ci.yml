@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # Feature branches are included so in-progress work gets compiled and tested
+    # before it reaches main. Remove "feat/**" if you prefer CI to run on PRs only.
+    branches: [main, master, "feat/**"]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
