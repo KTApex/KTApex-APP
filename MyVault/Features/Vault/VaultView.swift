@@ -128,6 +128,9 @@ struct VaultView: View {
             .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
             .searchable(text: $searchText, prompt: "Photos, videos, albums, dates")
             .toolbar { toolbarContent }
+            // Stable handle for UI tests: present regardless of whether the vault
+            // has content, and independent of how a TabView reports its navigation bar.
+            .accessibilityIdentifier("vault.screen")
     }
 
     private var navigationStack: some View {
