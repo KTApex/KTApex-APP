@@ -45,8 +45,8 @@ final class ShareServiceTests: XCTestCase {
     }
 
     @MainActor
-    private func prepare(_ items: [VaultMedia]) throws -> ShareService.Prepared {
-        let prepared = try ShareService.shared.prepare(items)
+    private func prepare(_ items: [VaultMedia]) async throws -> ShareService.Prepared {
+        let prepared = try await ShareService.shared.prepare(items)
         scratchDirectories.append(prepared.directory)
         return prepared
     }
@@ -58,7 +58,7 @@ final class ShareServiceTests: XCTestCase {
         let plaintext = try jpegData()
         let media = try makeMedia(plaintext, name: "IMG_1234.heic")
 
-        let prepared = try prepare([media])
+        let prepared = try await prepare([media])
 
         XCTAssertEqual(prepared.urls.count, 1)
         XCTAssertTrue(prepared.skipped.isEmpty)
@@ -73,7 +73,7 @@ final class ShareServiceTests: XCTestCase {
         let plaintext = try jpegData()
         let media = try makeMedia(plaintext, name: "photo")
 
-        let prepared = try prepare([media])
+        let prepared = try await prepare([media])
         let exported = try Data(contentsOf: try XCTUnwrap(prepared.urls.first))
         let ciphertext = try Data(contentsOf: VaultStorageService.shared.vaultDirectory
             .appendingPathComponent(media.encryptedFileName))
@@ -85,7 +85,7 @@ final class ShareServiceTests: XCTestCase {
     @MainActor
     func testCleanupRemovesEveryExportedFile() async throws {
         let media = try makeMedia(try jpegData(), name: "one")
-        let prepared = try prepare([media])
+        let prepared = try await prepare([media])
         let directory = prepared.directory
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
 
@@ -96,8 +96,11 @@ final class ShareServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testEmptySelectionIsRejected() {
-        XCTAssertThrowsError(try ShareService.shared.prepare([])) { error in
+    func testEmptySelectionIsRejected() async {
+        do {
+            _ = try await ShareService.shared.prepare([])
+            XCTFail("Preparing an empty selection must fail")
+        } catch {
             XCTAssertEqual(error as? ShareService.ShareError, .nothingSelected)
         }
     }
@@ -107,16 +110,19 @@ final class ShareServiceTests: XCTestCase {
         let good = try makeMedia(try jpegData(), name: "good")
         let missing = VaultMedia(fileName: "gone", encryptedFileName: "definitely-not-there.mvenc", mediaType: "photo")
 
-        let prepared = try prepare([good, missing])
+        let prepared = try await prepare([good, missing])
 
         XCTAssertEqual(prepared.urls.count, 1)
         XCTAssertEqual(prepared.skipped, ["gone"])
     }
 
     @MainActor
-    func testAllItemsUnreadableThrowsRatherThanSharingNothing() {
+    func testAllItemsUnreadableThrowsRatherThanSharingNothing() async {
         let missing = VaultMedia(fileName: "gone", encryptedFileName: "definitely-not-there.mvenc", mediaType: "photo")
-        XCTAssertThrowsError(try ShareService.shared.prepare([missing])) { error in
+        do {
+            _ = try await ShareService.shared.prepare([missing])
+            XCTFail("Sharing items that cannot be decrypted must fail")
+        } catch {
             XCTAssertEqual(error as? ShareService.ShareError, .nothingShareable)
         }
     }
@@ -126,7 +132,7 @@ final class ShareServiceTests: XCTestCase {
         let first = try makeMedia(try jpegData(width: 8, height: 8), name: "same")
         let second = try makeMedia(try jpegData(width: 12, height: 12), name: "same")
 
-        let prepared = try prepare([first, second])
+        let prepared = try await prepare([first, second])
 
         XCTAssertEqual(prepared.urls.count, 2)
         XCTAssertEqual(Set(prepared.urls.map(\.lastPathComponent)).count, 2)

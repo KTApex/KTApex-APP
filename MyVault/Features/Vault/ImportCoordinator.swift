@@ -1,5 +1,5 @@
 import Foundation
-import CoreTransferable
+import SwiftUI
 import SwiftData
 import PhotosUI
 
