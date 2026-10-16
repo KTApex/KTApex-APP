@@ -1,4 +1,5 @@
 import Foundation
+import CoreTransferable
 import PhotosUI
 import UniformTypeIdentifiers
 
