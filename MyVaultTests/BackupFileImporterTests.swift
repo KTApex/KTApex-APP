@@ -1,4 +1,6 @@
 import XCTest
+import UniformTypeIdentifiers
+import SwiftData
 @testable import MyVault
 
 /// Tests for the boundary between Files and the app.
