@@ -16,8 +16,10 @@ A premium, privacy-focused native iOS app with two core purposes:
 
 > **Apple signing limitation (read this first):** GitHub Actions cannot bypass Apple code signing.
 > Unsigned `xcodebuild build/test` works on CI with `CODE_SIGNING_ALLOWED=NO`.
-> A **signed IPA** requires your own Apple Developer credentials supplied as GitHub Secrets.
-> Without valid secrets, the `ios-release.yml` workflow fails at the "Validate signing secrets" step by design.
+> This repo ships **one** workflow, `ios-unsigned-ipa.yml`, which uses no Apple credentials
+> at all: it produces an **unsigned** IPA that must be re-signed (AltStore/Sideloadly/Xcode)
+> before it can be installed. A signed-IPA archive workflow is no longer included — see
+> "Signed IPA (optional)" below if you want to re-add one.
 
 ## Project structure
 
@@ -47,9 +49,8 @@ MyVaultTests/              Countdown, encryption, storage/duplicates, PIN policy
                            backup create/restore/rollback, Photos-removal gating
 MyVaultUITests/            Onboarding, tabs, special-day flow, vault, settings
 MyVaultWidget/Info.plist  Widget extension plist
-.github/workflows/        ci.yml (build+test), ios-release.yml (signed IPA),
-                           ios-unsigned-ipa.yml (tests + unsigned IPA artifact)
-ExportOptions.plist        Template; release workflow injects method + teamID
+.github/workflows/        ios-unsigned-ipa.yml (tests + unsigned IPA artifact)
+ExportOptions.plist        Template for a signed-archive workflow (see "Signed IPA")
 ```
 
 ## Unsigned IPA (no Apple credentials)
@@ -197,12 +198,34 @@ This rewrites `MyVault.xcodeproj/project.pbxproj` and patches the shared scheme 
 ## GitHub setup + CI
 
 1. Push this folder to a GitHub repo.
-2. `ci.yml` runs automatically on pushes/PRs to `main`/`master`:
-   checkout → select Xcode → clean build (unsigned) → `xcodebuild test` → upload `.xcresult`.
-3. `ios-release.yml` is manual (`workflow_dispatch`, pick `app-store` / `ad-hoc` / `development`):
-   validate secrets → temp keychain → import cert → install profile → archive → export IPA → upload artifact → delete keychain.
+2. `ios-unsigned-ipa.yml` runs automatically on pushes to `main`, `master` and `feat/**`,
+   and manually via `workflow_dispatch`:
+   unit tests on a simulator → Release device build (`CODE_SIGNING_ALLOWED=NO`) →
+   package `Payload/` → verify the IPA contains the app bundle and its executable →
+   upload the `MyVault-unsigned-ipa` artifact.
 
-## GitHub Secrets (release only)
+That single workflow is the whole CI story: it builds, runs the **unit** tests, and
+produces an installable-after-resigning IPA with no secrets configured. It needs
+nothing under *Settings → Secrets*.
+
+> **UI tests are no longer run in CI.** The previous `ci.yml` also ran
+> `MyVaultUITests`; that workflow was removed, so `ios-unsigned-ipa.yml` covers
+> `MyVaultTests` only. Run UI tests locally with `⌘U`, or re-add a UI-test job
+> (`-only-testing:MyVaultUITests`) if you want them gated again.
+
+## Signed IPA (optional)
+
+No signed-archive workflow is included, because it cannot work without your own Apple
+credentials. If you want one, re-add a `workflow_dispatch` workflow that:
+
+1. validates the signing secrets below and fails loudly if any are missing;
+2. creates a temporary keychain and imports `BUILD_CERTIFICATE_BASE64`;
+3. installs `PROVISIONING_PROFILE_BASE64` (+ the widget profile);
+4. runs `xcodebuild archive` then `xcodebuild -exportArchive` with an `ExportOptions.plist`
+   whose `method` you pass as an input (`app-store` / `ad-hoc` / `development`);
+5. uploads the IPA artifact and deletes the temporary keychain in an `always()` step.
+
+Secrets such a workflow would need:
 
 | Secret | Purpose |
 |---|---|
@@ -214,28 +237,16 @@ This rewrites `MyVault.xcodeproj/project.pbxproj` and patches the shared scheme 
 | `APPLE_TEAM_ID` | Your 10-char Team ID |
 | `BUNDLE_IDENTIFIER` | e.g. `com.yourname.myvault` |
 
-**Optional — App Store Connect API (only if you extend the workflow to upload to TestFlight/App Store):**
-
-| Secret | Purpose |
-|---|---|
-| `APP_STORE_CONNECT_KEY_ID` | Key ID from your App Store Connect API key |
-| `APP_STORE_CONNECT_ISSUER_ID` | Issuer ID from the App Store Connect API key |
-| `APP_STORE_CONNECT_PRIVATE_KEY` | The `.p8` private key contents (never commit it) |
-
-These are **not required** for IPA generation (only for the optional upload step), and are never
-hardcoded or committed — they are referenced only through `${{ secrets.… }}`.
-
-Create them under **Settings → Secrets and variables → Actions**. Never commit these files —
-`.gitignore` already excludes `*.p12`, `*.mobileprovision`, `.env`, `DerivedData/`, `build/`.
-
-Secrets are only referenced via `${{ secrets.… }}` and passed through `env:` — the workflows
-never `echo` secret values.
+These are never hardcoded or committed — reference them only through `${{ secrets.… }}`
+and pass them via `env:`; never `echo` a secret. Create them under
+**Settings → Secrets and variables → Actions**. `.gitignore` already excludes
+`*.p12`, `*.mobileprovision`, `.env`, `DerivedData/`, `build/`.
 
 ## TestFlight workflow
 
-1. Run `ios-release.yml` with `app-store` method.
-2. Download the IPA artifact (or extend the workflow with `notarytool`/`altool` upload via
-   `APP_STORE_CONNECT_KEY_ID` / `APP_STORE_CONNECT_ISSUER_ID` / `APP_STORE_CONNECT_PRIVATE_KEY`).
+1. Re-add the signed-IPA workflow described above (there is none in the repo right now).
+2. Run it with an `app-store` export method and download the resulting IPA artifact
+   (or extend it with a `notarytool`/`altool` upload using your App Store Connect key).
 3. Alternatively archive locally and use Xcode Organizer → Distribute → TestFlight.
 
 ## Troubleshooting
