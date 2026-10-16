@@ -32,6 +32,68 @@ struct MVLoadingView: View {
     let message: String
     var body: some View { VStack(spacing: 12) { ProgressView(); Text(message).foregroundStyle(.secondary) }.padding() }
 }
+/// Small glyph overlaid on media (favorite heart, album flag, video duration).
+/// Drawn with a shadow rather than a capsule so it stays legible on any photo
+/// without hiding the content underneath.
+struct MVBadge: View {
+    let symbol: String
+    var tint: Color = .white
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(tint)
+            .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Progress for work the user asked for and may want to stop (import, backup,
+/// restore). Cancelling is offered only when the operation can stop safely.
+struct MVProgressCard: View {
+    let title: String
+    var detail: String?
+    var progress: Double?
+    var onCancel: (() -> Void)?
+
+    var body: some View {
+        MVCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title).font(MVFont.headline)
+                    Spacer(minLength: 8)
+                    if let onCancel {
+                        Button("Cancel", action: onCancel)
+                            .font(.subheadline)
+                            .accessibilityLabel("Cancel")
+                    }
+                }
+                if let progress {
+                    ProgressView(value: min(max(progress, 0), 1))
+                } else {
+                    ProgressView()
+                }
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct MVInfoRow: View {
+    let label: String
+    let value: String
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer(minLength: 12)
+            Text(value).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct CountdownRing: View {
     var progress: Double
     var body: some View {

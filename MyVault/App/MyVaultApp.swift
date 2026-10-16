@@ -30,6 +30,9 @@ struct MyVaultApp: App {
     }
 
     private func configure() {
+        // Clear scratch space left by a share, export or restore that was interrupted
+        // by a crash or by the system terminating the app.
+        ShareService.purgeStaleExports()
         NotificationService.shared.requestAuthorizationIfNeeded()
         Task { await KeychainService.shared.ensureVaultKeyExists() }
         Task { @MainActor in
