@@ -43,12 +43,36 @@ MyVault/
 ├── Intents/              Open Vault / Show Next Special Day App Intents
 ├── Info.plist            Face ID, Photos, Notifications usage descriptions
 └── MyVault.entitlements  App Groups + iCloud (opt-in backup)
-MyVaultTests/              Countdown, encryption, storage/duplicates, PIN policy
+MyVaultTests/              Countdown, encryption, storage/duplicates, PIN policy,
+                           backup create/restore/rollback, Photos-removal gating
 MyVaultUITests/            Onboarding, tabs, special-day flow, vault, settings
 MyVaultWidget/Info.plist  Widget extension plist
-.github/workflows/        ci.yml (build+test), ios-release.yml (signed IPA)
+.github/workflows/        ci.yml (build+test), ios-release.yml (signed IPA),
+                           ios-unsigned-ipa.yml (tests + unsigned IPA artifact)
 ExportOptions.plist        Template; release workflow injects method + teamID
 ```
+
+## Unsigned IPA (no Apple credentials)
+
+`ios-unsigned-ipa.yml` produces an installable-after-resigning artifact without any
+Apple Developer account, certificate or provisioning profile:
+
+1. it runs the **unit tests** on a simulator first — an IPA is never packaged from a
+   tree whose tests fail;
+2. it builds the Release device binary with `CODE_SIGNING_ALLOWED=NO` (ad-hoc signing is
+   rejected by recent SDKs, so signing is skipped entirely);
+3. it packages `Payload/MyVault.app` into `MyVault-unsigned.ipa` and verifies the
+   archive really contains the app bundle;
+4. it uploads `MyVault-unsigned-ipa` as a workflow artifact.
+
+The unsigned IPA **cannot be installed directly**. Re-sign it with AltStore, Sideloadly
+or Xcode (free Apple ID) before sideloading. Keychain access works after re-signing
+because the app is signed with a real identity at that point; an *unsigned* build gets
+`errSecMissingEntitlement` (-34018) from every Keychain call.
+
+The workflow triggers on pushes to `main`, `master` and `feat/**`, plus manual dispatch,
+and uses `permissions: contents: read` with per-ref concurrency cancellation. It never
+reads a secret.
 
 ## Security model
 
@@ -61,8 +85,97 @@ ExportOptions.plist        Template; release workflow injects method + teamID
 - Biometrics via **LocalAuthentication** (device owner policy). No biometric data stored.
 - Backgrounding shows a blur shield so the app switcher never reveals private media.
 - Auto-lock: immediately / 30s / 1m / 5m.
+- Decrypted plaintext only ever exists in `SecureScratch` (complete file protection,
+  excluded from backup) and is removed when the operation finishes. The thumbnail
+  cache holds decrypted pixels in memory only, and is cleared on lock and backgrounding.
+
+### Photos → Vault removal ordering
+
+Removing an original from Apple Photos is gated on a full round-trip verification:
+
+1. the picked bytes are read (file representation preferred over in-memory), sniffed
+   and encrypted;
+2. the ciphertext is read back through the real decrypt path and its SHA-256 is
+   compared with the plaintext hash;
+3. the SwiftData row is persisted — an item whose row fails to save is *not* eligible;
+4. **only then** is the user asked whether to remove the original, and only the
+   verified-and-persisted assets are offered.
+
+A failed removal never touches the vault copy, and the original is never deleted
+before its vault copy verifies. Limited/denied Photos access, deletion refusal and
+partially visible assets are all reported as partial outcomes rather than silently
+ignored.
+
+### Portable encrypted backups (`.mvbackup`)
+
+`Settings → Backup & Restore` produces `MyVault_Backup_YYYY-MM-DD_HH-mm.mvbackup`.
+The file is **one authenticated encrypted stream**, not a plaintext ZIP:
+
+```text
+"MVBK"            4 bytes   magic
+formatVersion     1 byte    newer versions are refused before a password is asked
+kdf               1 byte    1 = PBKDF2-HMAC-SHA256 (Apple CommonCrypto)
+reserved          2 bytes   must be zero
+iterations        4 bytes   big-endian (10,000 … 5,000,000 enforced)
+saltLength        2 bytes   big-endian
+salt              n bytes   SecRandomCopyBytes
+── body ──────────────────── AES-GCM sealed 4 MiB parts
+entryCount        4 bytes   inside the encrypted payload
+entry*                      name, sizes, then one or more sealed parts
+```
+
+- The password is stretched with **PBKDF2-HMAC-SHA256** (250,000 iterations by default)
+  and a fresh random salt — CryptoKit has no password KDF, so Apple's own implementation
+  is used rather than a third-party one.
+- The header is passed as AES-GCM **associated data**, and each part additionally binds
+  its `(entry, part)` position, so a modified header, a reordered part or a duplicated
+  part cannot authenticate.
+- The whole file is written with complete file protection, built at a temporary path,
+  **verified by re-opening it**, and only then renamed to its final name.
+- Restore is **transactional**: the payload is staged and validated first, ciphertext is
+  written without being referenced, every row is inserted in a single save, and any
+  failure removes exactly what the restore created. Existing vault data is never
+  modified or deleted — items already present are matched by content hash and skipped.
+- Nothing security-relevant is in the backup: no PIN verifier, no vault key, no
+  lockout state. The backup password is never written to the file, `UserDefaults` or
+  the Keychain.
+
 - Trash: 30-day retention with restore, permanent delete, auto-purge of expired items.
 - Notifications are **local only** (`UserNotifications`); tapping one deep-links to the event.
+
+## Residual risks (what this design does *not* claim)
+
+No app is unhackable. These are the real, known limits:
+
+- **A weak backup password is the weakest link.** The `.mvbackup` file can be copied
+  freely, so offline guessing is possible. PBKDF2 with 250,000 iterations makes each
+  guess expensive but cannot rescue a short or common password. Pick a long passphrase.
+- **An unlocked, jailbroken or compromised device can read decrypted media.** Vault
+  ciphertext is protected at rest by AES-GCM and `NSFileProtectionComplete`; while the
+  app is unlocked and the key is in memory, a privileged attacker on the device can
+  reach plaintext. There is no protection against a live kernel-level attacker.
+- **Screenshots / screen recording of the viewer are not blocked.** The app-switcher
+  shield hides the app when backgrounded, but `UIScreen` capture during use is not
+  prevented, because iOS does not offer a supported API to do it reliably.
+- **The vault key is `ThisDeviceOnly`.** That is deliberate: a stolen Keychain backup or
+  iTunes/iCloud device backup cannot be used to decrypt the vault on another device. The
+  consequence is that the *only* way to move media is a `.mvbackup` — which needs its
+  password, and which MyVault cannot recover.
+- **Sharing necessarily produces brief plaintext on disk** in scratch space (complete
+  file protection, excluded from backup, removed after the share sheet finishes and
+  again at next launch). A share left in flight when the device is compromised during
+  that window is exposed as any plaintext file would be.
+- **Backups contain the user's original media** in encrypted form. A backup made before
+  a "delete permanently" still contains that media — restore does not know it was deleted.
+- **No protection against a malicious OS-level backup or a compromised build.** Code
+  signing protects the binary's integrity; an attacker who can install their own build
+  with the same signing identity is outside this model.
+- **`SwiftData` metadata is not itself encrypted**; it holds file names, dates, sizes and
+  hashes, not media bytes. The database file relies on the app sandbox and file
+  protection, not on application-level encryption.
+- **Photos removal moves originals to Apple's "Recently Deleted"**, where they remain
+  recoverable for up to 30 days. MyVault cannot force permanent erasure of a Photos asset.
+
 
 ## Local build
 

@@ -14,6 +14,11 @@ enum AppAccent: String, CaseIterable, Identifiable {
 
 @MainActor
 final class ThemeManager: ObservableObject {
+    /// The one instance the app runs on. A restore needs to reach the live
+    /// manager, not a freshly created one, or the new theme would only appear
+    /// after a relaunch.
+    static let shared = ThemeManager()
+
     @Published var mode: AppThemeMode {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "mv.theme"); }
     }
@@ -28,6 +33,14 @@ final class ThemeManager: ObservableObject {
         switch mode { case .system: return nil; case .light: return .light; case .dark: return .dark }
     }
     var accentColorValue: Color { accent.color }
+
+    /// Applies preferences carried in from a backup. Setting the properties
+    /// persists them through the observers above and publishes the change, so
+    /// the restored theme takes effect immediately. Unknown values are ignored.
+    func applyRestoredPreferences(theme: String?, accent: String?) {
+        if let theme, let mode = AppThemeMode(rawValue: theme) { self.mode = mode }
+        if let accent, let restored = AppAccent(rawValue: accent) { self.accent = restored }
+    }
 }
 
 struct MVColors {

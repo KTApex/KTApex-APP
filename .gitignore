@@ -43,3 +43,6 @@ fastlane/report.xml
 
 # Helper scripts (regenerate project with: python3 gen_project.py)
 # gen_project.py
+
+# Local tooling cache (not part of the app; never commit)
+.freebuff/

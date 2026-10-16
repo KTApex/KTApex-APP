@@ -1,0 +1,156 @@
+name: iOS Unsigned IPA
+
+# Builds an unsigned (ad-hoc signed) device IPA without any Apple Developer
+# credentials. The resulting IPA cannot be installed directly; re-sign it with a
+# tool like AltStore/Sideloadly (free Apple ID) before sideloading.
+#
+# Triggers:
+#   * every push to main, master or a feature branch (so in-progress work still
+#     produces a testable artifact), and
+#   * manual dispatch.
+#
+# The job first compiles and runs the unit tests for the simulator, and only
+# packages an IPA when that succeeds: publishing an IPA from a tree whose tests
+# fail would hand out a build nobody should install.
+
+on:
+  push:
+    branches: [main, master, "feat/**"]
+  workflow_dispatch:
+
+# Least privilege: this workflow only reads the repository. No secrets, no
+# certificates and no provisioning profiles are used or required.
+permissions:
+  contents: read
+
+# A superseded push cancels its own in-flight run instead of queueing a second
+# full macOS build behind it.
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SCHEME: MyVault
+  PROJECT: MyVault.xcodeproj
+  BUNDLE_IDENTIFIER: com.ktapex.myvault
+  SIMULATOR_NAME: iPhone 16
+
+jobs:
+  unsigned-ipa:
+    name: Build Unsigned IPA
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Run unit tests
+        id: unit_tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=$SIMULATOR_NAME,OS=latest" \
+            -derivedDataPath "$RUNNER_TEMP/TestDerivedData" \
+            -only-testing:MyVaultTests \
+            -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
+            BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/unit-test.log"
+
+      - name: Show unit test failures
+        if: steps.unit_tests.outcome == 'failure'
+        run: |
+          echo "=========== UNIT TEST FAILURES ==========="
+          grep -nE "error:|XCTAssert|Test Case .* failed|failed \(|BUILD FAILED|\*\* TEST FAILED" "$RUNNER_TEMP/unit-test.log" || true
+          echo "=========== LAST 120 LINES ==========="
+          tail -n 120 "$RUNNER_TEMP/unit-test.log" || true
+          echo "========================================="
+
+      - name: Stop before packaging a broken build
+        if: steps.unit_tests.outcome == 'failure'
+        run: |
+          echo "::error::Unit tests failed, so no IPA was packaged. Fix the tests (or the code) and push again."
+          exit 1
+
+      - name: Build unsigned device binary
+        id: build
+        run: |
+          set -o pipefail
+          # CODE_SIGNING_ALLOWED=NO produces a fully unsigned device binary:
+          # ad-hoc signing (CODE_SIGN_IDENTITY="-") is rejected by recent SDKs
+          # ("Ad Hoc code signing is not allowed"), so signing must be skipped.
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Show build errors
+        if: failure() && steps.build.outcome == 'failure'
+        run: |
+          echo "=========== BUILD DIAGNOSTICS ==========="
+          grep -E "error: |Code Signing|requires a provisioning profile|No profiles|BUILD FAILED|The following build commands failed" "$RUNNER_TEMP/build.log" | head -20 || true
+          echo "=========== LAST 60 LINES ==========="
+          tail -n 60 "$RUNNER_TEMP/build.log" || true
+
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP_PATH" ]; then echo "::error::No .app found in build products"; ls -R "$RUNNER_TEMP/DerivedData/Build/Products" || true; exit 1; fi
+          cd "$RUNNER_TEMP"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          # SwiftSupport is optional for ad-hoc re-signing; skip it.
+          zip -ry MyVault-unsigned.ipa Payload
+          ls -lh MyVault-unsigned.ipa
+
+      - name: Verify the IPA was produced
+        run: |
+          IPA="$RUNNER_TEMP/MyVault-unsigned.ipa"
+          if [ ! -f "$IPA" ]; then echo "::error::The IPA was not created"; exit 1; fi
+          # A real MyVault IPA is several megabytes; a tiny file means the package
+          # step silently produced almost nothing.
+          SIZE=$(stat -f%z "$IPA")
+          echo "IPA size: $SIZE bytes"
+          if [ "$SIZE" -lt 1000000 ]; then echo "::error::The IPA looks truncated ($SIZE bytes)"; exit 1; fi
+          unzip -l "$IPA" | grep -q 'Payload/.*\.app/' || { echo "::error::The IPA has no app bundle inside"; exit 1; }
+          # The app bundle must contain the actual binary, not just resources.
+          # The name is derived from any path under Payload/ (a zip is not required to
+          # carry an explicit directory entry for the bundle itself).
+          APP_NAME=$(unzip -Z1 "$IPA" | sed -n 's#^Payload/\([^/]*\.app\)/.*#\1#p' | head -1)
+          if [ -z "$APP_NAME" ]; then echo "::error::Could not determine the app bundle name"; exit 1; fi
+          BINARY="${APP_NAME%.app}"
+          if ! unzip -Z1 "$IPA" | grep -qx "Payload/$APP_NAME/$BINARY"; then
+            echo "::error::The IPA is missing its executable Payload/$APP_NAME/$BINARY"
+            exit 1
+          fi
+          echo "IPA content check passed ($APP_NAME)."
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyVault-unsigned-ipa
+          path: ${{ runner.temp }}/MyVault-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa-test-log
+          path: ${{ runner.temp }}/unit-test.log
+          if-no-files-found: ignore

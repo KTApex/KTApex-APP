@@ -6,7 +6,7 @@ import UserNotifications
 struct MyVaultApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
-    @StateObject private var themeManager = ThemeManager()
+    @StateObject private var themeManager = ThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var sharedModelContainer: ModelContainer = {

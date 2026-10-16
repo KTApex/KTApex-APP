@@ -3,6 +3,19 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 
+/// The Photos-facing surface `ImportCoordinator` depends on. Extracted so the
+/// removal flow can be unit-tested against a mock instead of the real photo
+/// library; `PhotoLibraryService` conforms in production.
+protocol PhotoLibraryDeleting: Sendable {
+    func access() -> PhotoAccess
+    func requestAuthorization() async -> PhotoAccess
+    func deleteOriginals(_ identifiers: [String]) async -> OriginalDeleteOutcome
+    @discardableResult
+    func presentLimitedLibraryPicker() -> Bool
+}
+
+extension PhotoLibraryService: PhotoLibraryDeleting {}
+
 /// Drives Photos → Vault imports and the removal of Photos originals.
 ///
 /// The ordering below **is** the safety property the flow depends on:
@@ -40,6 +53,7 @@ final class ImportCoordinator: ObservableObject {
     enum NoticeAction: Equatable {
         case requestPhotosAccess
         case openSystemSettings
+        case manageSelectedPhotos
     }
 
     struct Notice: Identifiable, Equatable {
@@ -52,6 +66,7 @@ final class ImportCoordinator: ObservableObject {
             switch action {
             case .requestPhotosAccess: return "Allow Photos Access"
             case .openSystemSettings: return "Open Settings"
+            case .manageSelectedPhotos: return "Manage Selected Photos"
             case nil: return nil
             }
         }
@@ -72,8 +87,15 @@ final class ImportCoordinator: ObservableObject {
 
     private var cancelRequested = false
     /// Identifiers from the most recent verified batch, so the permission alert can
-    /// offer removal once access is granted.
-    private var pendingRemovalIdentifiers: [String] = []
+    /// offer removal once access is granted. Internal (not private) so tests can
+    /// seed it; only this type mutates it in the app.
+    var pendingRemovalIdentifiers: [String] = []
+
+    private let photoLibrary: PhotoLibraryDeleting
+
+    init(photoLibrary: PhotoLibraryDeleting = PhotoLibraryService.shared) {
+        self.photoLibrary = photoLibrary
+    }
 
     var isWorking: Bool { stage != .idle }
     var workingLabel: String {
@@ -91,8 +113,8 @@ final class ImportCoordinator: ObservableObject {
     /// only handle the app has for removing an original later. Asking up front is
     /// what makes the verified-removal offer possible at all.
     func prepareForImport() async {
-        guard PhotoLibraryService.shared.access() == .notDetermined else { return }
-        _ = await PhotoLibraryService.shared.requestAuthorization()
+        guard photoLibrary.access() == .notDetermined else { return }
+        _ = await photoLibrary.requestAuthorization()
     }
 
     func start(_ items: [PhotosPickerItem], context: ModelContext, album: VaultAlbum?) {
@@ -115,7 +137,8 @@ final class ImportCoordinator: ObservableObject {
 
     private func run(_ items: [PhotosPickerItem], context: ModelContext, album: VaultAlbum?) async {
         var result = Summary()
-        var verifiedAssets: [String] = []
+        var importResults: [ImportItemResult] = []
+        var persistedHashes = Set<String>()
         var seen = Self.existingHashes(in: context)
         let total = items.count
 
@@ -142,7 +165,7 @@ final class ImportCoordinator: ObservableObject {
                 seen.insert(outcome.contentHash)
                 if persist(outcome, context: context, album: album) {
                     result.imported += 1
-                    if let asset = outcome.assetIdentifier { verifiedAssets.append(asset) }
+                    persistedHashes.insert(outcome.contentHash)
                 } else {
                     // Persisting failed, so the row does not exist: the ciphertext is
                     // an orphan and the original must not be offered for removal.
@@ -158,6 +181,7 @@ final class ImportCoordinator: ObservableObject {
                 result.failed += 1
                 if result.firstErrorMessage == nil { result.firstErrorMessage = outcome.errorMessage }
             }
+            importResults.append(outcome)
 
             stage = .working(label: "Encrypting and verifying", completed: index + 1, total: total)
         }
@@ -166,8 +190,21 @@ final class ImportCoordinator: ObservableObject {
         stage = .idle
         if result.imported > 0 { Haptics.success() } else if result.failed > 0 { Haptics.error() } else { Haptics.tap() }
 
-        if !offerRemoval(for: verifiedAssets) {
+        if !offerRemoval(for: Self.removalEligibleIdentifiers(importResults, persistedHashes: persistedHashes)) {
             notice = Self.summaryNotice(result)
+        }
+    }
+
+    /// The removal gate: an asset may be offered for deletion only when its
+    /// import verified *and* its SwiftData row persisted. Failed, duplicate and
+    /// persist-failed items are never eligible, so a Photos original is never
+    /// removed without a retrievable vault copy behind it.
+    static func removalEligibleIdentifiers(_ results: [ImportItemResult], persistedHashes: Set<String>) -> [String] {
+        results.compactMap { result in
+            guard result.status == .imported,
+                  persistedHashes.contains(result.contentHash),
+                  let identifier = result.assetIdentifier else { return nil }
+            return identifier
         }
     }
 
@@ -208,7 +245,7 @@ final class ImportCoordinator: ObservableObject {
     /// because a removal confirmation (or a permission notice) is on screen instead.
     private func offerRemoval(for assets: [String]) -> Bool {
         pendingRemovalIdentifiers = assets
-        let access = PhotoLibraryService.shared.access()
+        let access = photoLibrary.access()
 
         guard !assets.isEmpty else {
             // Media is safely in the vault but nothing can be removed — because the
@@ -233,7 +270,7 @@ final class ImportCoordinator: ObservableObject {
         removalRequest = nil
         stage = .working(label: "Removing originals from Photos", completed: 0, total: request.assetIdentifiers.count)
         Task {
-            let outcome = await PhotoLibraryService.shared.deleteOriginals(request.assetIdentifiers)
+            let outcome = await photoLibrary.deleteOriginals(request.assetIdentifiers)
             stage = .idle
             pendingRemovalIdentifiers = []
             if outcome.allDeleted {
@@ -265,19 +302,27 @@ final class ImportCoordinator: ObservableObject {
 
     func requestPhotosAccess() {
         Task {
-            let access = await PhotoLibraryService.shared.requestAuthorization()
+            let access = await photoLibrary.requestAuthorization()
             if access.canReadLibrary {
-                notice = Notice(
-                    title: "Photos access granted",
-                    message: "Access is only used to read the media you pick and, after a verified import, to remove the original you choose. Imports from now on can offer to remove originals.",
-                    isError: false
-                )
+                guard !pendingRemovalIdentifiers.isEmpty else {
+                    notice = Notice(
+                        title: "Photos access granted",
+                        message: "Access is only used to read the media you pick and, after a verified import, to remove the original you choose. Imports from now on can offer to remove originals.",
+                        isError: false
+                    )
+                    return
+                }
+                // Access arrived after a verified batch that could not be offered
+                // for removal earlier: offer exactly those assets now.
+                let identifiers = pendingRemovalIdentifiers
+                pendingRemovalIdentifiers = []
+                removalRequest = RemovalRequest(assetIdentifiers: identifiers, limitedAccess: access == .limited)
             } else {
                 notice = Notice(
                     title: "Originals kept in Photos",
                     message: access.explanation,
                     isError: true,
-                    action: access == .denied ? .openSystemSettings : nil
+                    action: access == .limited ? .manageSelectedPhotos : (access == .denied ? .openSystemSettings : nil)
                 )
             }
         }
@@ -287,6 +332,7 @@ final class ImportCoordinator: ObservableObject {
         switch notice?.action {
         case .requestPhotosAccess: notice = nil; requestPhotosAccess()
         case .openSystemSettings: notice = nil; PhotoLibraryService.shared.openSettings()
+        case .manageSelectedPhotos: notice = nil; photoLibrary.presentLimitedLibraryPicker()
         case nil: notice = nil
         }
     }

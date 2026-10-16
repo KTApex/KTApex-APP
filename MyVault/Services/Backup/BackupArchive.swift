@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Compression
 
 /// Something to write into a backup.
 struct BackupEntry {
@@ -335,7 +336,13 @@ enum BackupArchive {
                 throw error
             }
 
-            guard UInt64(entryBytes) == uncompressedLength else { throw BackupError.corrupted }
+            // Uncompressed entries carry their payload verbatim, so the staged
+            // size must equal the recorded size. Compressed entries hold the
+            // *compressed* size here; their true size is validated against
+            // `uncompressedLength` after decompression below.
+            if flags & 1 == 0 {
+                guard UInt64(entryBytes) == uncompressedLength else { throw BackupError.corrupted }
+            }
             totalPayload += entryBytes
             guard totalPayload <= BackupFormat.Limits.maximumTotalBytes else { throw BackupError.corrupted }
 
@@ -351,6 +358,14 @@ enum BackupArchive {
 
             staged[name] = stagedURL
             progress?(min(Double(totalPayload) / Double(totalFileSize), 1))
+        }
+
+        if entryLimit == nil {
+            // The container ends exactly after the last entry: anything more
+            // means the file was appended to or tampered with. Limited reads
+            // stop early on purpose, so only a full read enforces this.
+            let trailing = try handle.read(upToCount: 1) ?? Data()
+            guard trailing.isEmpty else { throw BackupError.corrupted }
         }
 
         return ReadResult(header: header, stagedFiles: staged, totalPayloadBytes: totalPayload)
@@ -381,17 +396,37 @@ enum BackupCompression {
     }
 
     /// Decompresses with a hard ceiling on the result, so a small crafted entry
-    /// cannot expand into hundreds of megabytes.
+    /// cannot expand into hundreds of megabytes. Inflation is streamed: output
+    /// is produced in 64 KiB chunks and the operation is aborted the moment the
+    /// running total passes the cap, so even a ~1000:1 zlib bomb never gets to
+    /// allocate more than the limit plus one chunk.
     static func decompress(_ data: Data, limit: Int) throws -> Data {
-        guard data.count <= limit else { throw BackupError.corrupted }
-        do {
-            let expanded = try (data as NSData).decompressed(using: .zlib) as Data
-            guard expanded.count <= limit else { throw BackupError.corrupted }
-            return expanded
-        } catch let error as BackupError {
-            throw error
-        } catch {
+        guard !data.isEmpty, data.count <= limit else { throw BackupError.corrupted }
+
+        var stream = compression_stream()
+        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw BackupError.corrupted
         }
+        defer { compression_stream_end(&stream) }
+
+        var output = Data()
+        output.reserveCapacity(min(data.count * 4, limit))
+        var status = COMPRESSION_STATUS_OK
+        data.withUnsafeBytes { rawBuffer in
+            stream.src_ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            stream.src_size = data.count
+            let chunk = UnsafeMutablePointer<UInt8>.allocate(capacity: 64 * 1024)
+            defer { chunk.deallocate() }
+            repeat {
+                stream.dst_ptr = chunk
+                stream.dst_size = 64 * 1024
+                status = compression_stream_process(&stream, COMPRESSION_STREAM_FINALIZE)
+                output.append(chunk, count: 64 * 1024 - stream.dst_size)
+                if output.count > limit { break }
+            } while status == COMPRESSION_STATUS_OK
+        }
+        // The only acceptable end state is a clean finish at or under the cap.
+        guard status == COMPRESSION_STATUS_END, output.count <= limit else { throw BackupError.corrupted }
+        return output
     }
 }

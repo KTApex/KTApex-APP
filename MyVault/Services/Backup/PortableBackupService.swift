@@ -22,6 +22,11 @@ final class PortableBackupService: ObservableObject {
     static let shared = PortableBackupService()
     private init() {}
 
+    /// Testing seam: when true, Phase B of a restore fails exactly as if the
+    /// final save had failed, so tests can prove the rollback removes the
+    /// staged ciphertext and leaves the vault untouched. Never set in the app.
+    var forceCommitFailure = false
+
     // MARK: - Types
 
     struct Progress: Equatable {
@@ -143,9 +148,12 @@ final class PortableBackupService: ObservableObject {
     ) async throws -> Artifact {
         progress(Progress(stage: .preparing, fraction: 0, detail: nil))
         let plan = try buildPlan(context: context)
-        // A vault with no media files on disk has nothing worth sealing, and the
-        // dedicated case keeps this distinct from a *restore* failure in the UI.
-        guard !plan.entries.isEmpty else {
+        // A completely empty vault has nothing worth sealing, and the dedicated
+        // case keeps this distinct from a *restore* failure in the UI. Media is
+        // not required: albums, special days and reminders are content too.
+        let manifest = plan.manifest
+        guard manifest.counts.media > 0 || !manifest.albums.isEmpty
+            || !manifest.specialDays.isEmpty || !manifest.reminders.isEmpty else {
             throw BackupError.nothingToBackUp
         }
 
@@ -474,22 +482,35 @@ final class PortableBackupService: ObservableObject {
         // yet, and `written` lets every failure path clean up exactly what exists.
         let written = FileNameCollector()
         var encrypted: [EncryptedItem] = []
+        var inBackupDuplicates = 0
         do {
-            encrypted = try await Task.detached(priority: .userInitiated) { () throws -> [EncryptedItem] in
+            let outcome = try await Task.detached(priority: .userInitiated) { () throws -> (items: [EncryptedItem], duplicates: Int) in
                 var results: [EncryptedItem] = []
                 var seen = existingHashes
+                var seenInBackup = Set<String>()
+                var duplicates = 0
                 for (media, stagedURL) in stagedForImport {
                     if cancelFlag.isCancelled { throw BackupError.cancelled }
                     // Restoring something already present is a no-op, not an error.
-                    if !media.contentHash.isEmpty, seen.contains(media.contentHash) { continue }
+                    if !media.contentHash.isEmpty, seen.contains(media.contentHash) {
+                        // Two distinct items in one backup claiming the same hash:
+                        // the first wins, the rest are reported so the summary
+                        // matches what the preview promised.
+                        if seenInBackup.contains(media.contentHash) { duplicates += 1 }
+                        seenInBackup.insert(media.contentHash)
+                        continue
+                    }
+                    if !media.contentHash.isEmpty { seenInBackup.insert(media.contentHash) }
                     let data = try Data(contentsOf: stagedURL)
                     let storedName = try VaultStorageService.shared.storeEncrypted(data: data)
                     written.append(storedName)
                     seen.insert(media.contentHash)
                     results.append(EncryptedItem(media: media, storedName: storedName))
                 }
-                return results
+                return (results, duplicates)
             }.value
+            encrypted = outcome.items
+            inBackupDuplicates = outcome.duplicates
         } catch {
             for name in written.names { VaultStorageService.shared.delete(fileName: name) }
             throw error
@@ -561,6 +582,7 @@ final class PortableBackupService: ObservableObject {
                 createdReminders += 1
             }
 
+            if forceCommitFailure { throw BackupError.failedToWrite }
             try context.save()
 
             // Device-independent preferences only: nothing about unlock security is
@@ -572,7 +594,7 @@ final class PortableBackupService: ObservableObject {
             summary.albums = createdAlbums
             summary.specialDays = createdDays
             summary.reminders = createdReminders
-            summary.skippedDuplicates = duplicateCount
+            summary.skippedDuplicates = duplicateCount + inBackupDuplicates
             summary.bytes = encrypted.reduce(0) { $0 + $1.media.fileSize }
             written.clear()
             return await verify(summary: summary, encrypted: encrypted, progress: progress)
@@ -616,8 +638,10 @@ final class PortableBackupService: ObservableObject {
     private func applyRestoredSettings(_ settings: BackupManifest.Settings) {
         let defaults = UserDefaults.standard
         if let autoLock = settings.autoLockSeconds { defaults.set(autoLock, forKey: "mv.autolock") }
-        if let theme = settings.themeMode { defaults.set(theme, forKey: "mv.theme") }
-        if let accent = settings.accent { defaults.set(accent, forKey: "mv.accent") }
+        // Theme and accent go through ThemeManager so the @Published properties
+        // update too — writing UserDefaults alone would leave the running app
+        // showing the old theme until the next launch.
+        ThemeManager.shared.applyRestoredPreferences(theme: settings.themeMode, accent: settings.accent)
         if let columns = settings.galleryColumns { defaults.set(columns, forKey: "mv.galleryColumns") }
     }
 }

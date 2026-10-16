@@ -68,6 +68,7 @@
 		5BB2DD152BFB4D2BA75BC375 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CountdownEngineTests.swift"; path = "MyVaultTests/CountdownEngineTests.swift"; sourceTree = "<group>"; };
 		D722658C21724E169906AFA6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EncryptionTests.swift"; path = "MyVaultTests/EncryptionTests.swift"; sourceTree = "<group>"; };
 		5A69874F49E44DDC9C2CCA26 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "GalleryComposerTests.swift"; path = "MyVaultTests/GalleryComposerTests.swift"; sourceTree = "<group>"; };
+		51879811EAD74228BA271176 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ImportCoordinatorTests.swift"; path = "MyVaultTests/ImportCoordinatorTests.swift"; sourceTree = "<group>"; };
 		ADFB369076F14F079D58C856 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "KeychainIntegrationTests.swift"; path = "MyVaultTests/KeychainIntegrationTests.swift"; sourceTree = "<group>"; };
 		1217B592FE8449A2B6FE77EE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "MediaHandlingTests.swift"; path = "MyVaultTests/MediaHandlingTests.swift"; sourceTree = "<group>"; };
 		B7045AD570F3451385F593A0 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "PINLogicTests.swift"; path = "MyVaultTests/PINLogicTests.swift"; sourceTree = "<group>"; };
