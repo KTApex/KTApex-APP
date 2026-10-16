@@ -79,35 +79,13 @@ struct VaultView: View {
 
     // MARK: - Body
 
+    /// The body is deliberately split into layers. One long chain of modifiers,
+    /// sheets, dialogs and inline closures inside a single expression makes the
+    /// Swift type checker give up ("unable to type-check this expression in
+    /// reasonable time"), so each layer stays small enough to check on its own and
+    /// the closure bodies live in ordinary methods.
     var body: some View {
-        NavigationStack {
-            Group {
-                if visibleMedia.isEmpty {
-                    emptyState
-                } else {
-                    GalleryGrid(
-                        sections: sections,
-                        columnCount: columnCount,
-                        isSelecting: isSelecting,
-                        selection: $selection,
-                        onOpen: { viewerItem = $0 },
-                        onToggleSelection: { toggleSelection($0) }
-                    )
-                }
-            }
-            .safeAreaInset(edge: .top, spacing: 0) { topBanner }
-            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
-            .navigationTitle("Vault")
-            .navigationDestination(isPresented: $showingTrash) { TrashView() }
-            .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
-            .searchable(text: $searchText, prompt: "Photos, videos, albums, dates")
-            .photosPicker(
-                isPresented: $showingPicker,
-                selection: $pickerItems,
-                maxSelectionCount: 50,
-                matching: .any(of: [.images, .videos])
-            )
-            .toolbar { toolbarContent }
+        chrome
             .sheet(isPresented: $showingNewAlbum) { newAlbumSheet }
             .sheet(isPresented: viewerBinding) {
                 MediaViewerView(items: visibleMedia, selectedID: viewerItem?.id)
@@ -118,8 +96,7 @@ struct VaultView: View {
                 titleVisibility: .visible,
                 presenting: importer.removalRequest
             ) { request in
-                Button(removalButtonTitle(request), role: .destructive) { importer.confirmRemoval() }
-                Button("Keep in Photos", role: .cancel) { importer.keepOriginals() }
+                removalDialogButtons(request)
             } message: { request in
                 Text(removalMessage(request))
             }
@@ -128,46 +105,110 @@ struct VaultView: View {
                 isPresented: alertBinding,
                 presenting: alertItem
             ) { item in
-                if let actionTitle = item.actionTitle {
-                    Button(actionTitle) {
-                        item.action?()
-                        alertItem = nil
-                        importer.dismissNotice()
-                    }
-                }
-                Button("OK", role: .cancel) {
-                    alertItem = nil
-                    importer.dismissNotice()
-                }
+                alertButtons(item)
             } message: { item in
                 Text(item.message)
             }
             .vaultShareSheet(prepared: $shareBundle) { skipped in
-                alertItem = VaultAlert(
-                    title: "Some items were not shared",
-                    message: "These items could not be decrypted, so they were left out: \(skipped.prefix(5).joined(separator: ", "))\(skipped.count > 5 ? " and \(skipped.count - 5) more" : "").",
-                    isError: true
-                )
+                reportSkippedShares(skipped)
             }
-            .onChange(of: pickerItems) { _, items in
-                guard !items.isEmpty else { return }
-                importer.start(items, context: context, album: selectedAlbum)
-                pickerItems = []
-            }
-            .onChange(of: importer.notice) { _, notice in
-                guard let notice else { return }
-                // The importer keeps its notice until the user answers, because the
-                // permission action reads it back when it runs.
-                alertItem = VaultAlert(
-                    title: notice.title,
-                    message: notice.message,
-                    actionTitle: notice.actionTitle,
-                    action: notice.action == nil ? nil : { importer.performNoticeAction() },
-                    isError: notice.isError
-                )
-            }
+            .onChange(of: pickerItems) { _, items in handlePickedItems(items) }
+            .onChange(of: importer.notice) { _, notice in showNotice(notice) }
             .onChange(of: visibleMedia.count) { _, _ in clampSelection() }
+    }
+
+    /// Navigation, search and the toolbar. These have to sit on the
+    /// `NavigationStack` itself, so they are grouped rather than nested further.
+    private var chrome: some View {
+        navigationStack
+            .safeAreaInset(edge: .top, spacing: 0) { topBanner }
+            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
+            .navigationTitle("Vault")
+            .navigationDestination(isPresented: $showingTrash) { TrashView() }
+            .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
+            .searchable(text: $searchText, prompt: "Photos, videos, albums, dates")
+            .toolbar { toolbarContent }
+    }
+
+    private var navigationStack: some View {
+        NavigationStack {
+            grid
+                .photosPicker(
+                    isPresented: $showingPicker,
+                    selection: $pickerItems,
+                    maxSelectionCount: 50,
+                    matching: .any(of: [.images, .videos])
+                )
         }
+    }
+
+    @ViewBuilder
+    private var grid: some View {
+        if visibleMedia.isEmpty {
+            emptyState
+        } else {
+            GalleryGrid(
+                sections: sections,
+                columnCount: columnCount,
+                isSelecting: isSelecting,
+                selection: $selection,
+                onOpen: { viewerItem = $0 },
+                onToggleSelection: { toggleSelection($0) }
+            )
+        }
+    }
+
+    // MARK: - Presentation closures
+
+    @ViewBuilder
+    private func alertButtons(_ item: VaultAlert) -> some View {
+        if let actionTitle = item.actionTitle {
+            Button(actionTitle) {
+                item.action?()
+                alertItem = nil
+                importer.dismissNotice()
+            }
+        }
+        Button("OK", role: .cancel) {
+            alertItem = nil
+            importer.dismissNotice()
+        }
+    }
+
+    @ViewBuilder
+    private func removalDialogButtons(_ request: ImportCoordinator.RemovalRequest) -> some View {
+        Button(removalButtonTitle(request), role: .destructive) { importer.confirmRemoval() }
+        Button("Keep in Photos", role: .cancel) { importer.keepOriginals() }
+    }
+
+    private func handlePickedItems(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        importer.start(items, context: context, album: selectedAlbum)
+        pickerItems = []
+    }
+
+    private func showNotice(_ notice: ImportCoordinator.Notice?) {
+        guard let notice else { return }
+        // The importer keeps its notice until the user answers, because the
+        // permission action reads it back when it runs.
+        alertItem = VaultAlert(
+            title: notice.title,
+            message: notice.message,
+            actionTitle: notice.actionTitle,
+            action: notice.action == nil ? nil : { importer.performNoticeAction() },
+            isError: notice.isError
+        )
+    }
+
+    private func reportSkippedShares(_ skipped: [String]) {
+        var message = "These items could not be decrypted, so they were left out: "
+            + skipped.prefix(5).joined(separator: ", ")
+        if skipped.count > 5 { message += " and \(skipped.count - 5) more" }
+        alertItem = VaultAlert(
+            title: "Some items were not shared",
+            message: message + ".",
+            isError: true
+        )
     }
 
     // MARK: - Sections of the screen
