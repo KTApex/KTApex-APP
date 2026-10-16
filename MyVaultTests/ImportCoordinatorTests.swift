@@ -7,7 +7,7 @@ import XCTest
 /// nothing is ever deleted from the vault or Photos without an explicit confirm.
 /// Records what the coordinator asked for instead of touching the real photo
 /// library. `deleteOriginals` returns a canned outcome.
-private final class MockPhotoLibrary: PhotoLibraryDeleting, @unchecked Sendable {
+private final class MockPhotoLibrary: PhotoLibraryDeleting {
     var accessLevel: PhotoAccess = .authorized
     var deleteOutcome = OriginalDeleteOutcome()
     private(set) var deleteCalls: [[String]] = []

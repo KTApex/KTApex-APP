@@ -6,7 +6,13 @@ import PhotosUI
 /// The Photos-facing surface `ImportCoordinator` depends on. Extracted so the
 /// removal flow can be unit-tested against a mock instead of the real photo
 /// library; `PhotoLibraryService` conforms in production.
-protocol PhotoLibraryDeleting: Sendable {
+///
+/// The protocol is deliberately *not* `Sendable`: `PhotoLibraryService` is a
+/// plain class holding no state, and every call below happens from
+/// `ImportCoordinator`, which is `@MainActor`. Requiring `Sendable` here would
+/// force a `@unchecked` conformance on a type that neither needs nor earns it.
+@MainActor
+protocol PhotoLibraryDeleting: AnyObject {
     func access() -> PhotoAccess
     func requestAuthorization() async -> PhotoAccess
     func deleteOriginals(_ identifiers: [String]) async -> OriginalDeleteOutcome
@@ -93,7 +99,14 @@ final class ImportCoordinator: ObservableObject {
 
     private let photoLibrary: PhotoLibraryDeleting
 
-    init(photoLibrary: PhotoLibraryDeleting = PhotoLibraryService.shared) {
+    /// The default is resolved *inside* the initializer rather than in the
+    /// parameter list: a default argument is evaluated outside the actor, and
+    /// `PhotoLibraryService.shared` cannot be read from a non-isolated context.
+    init() {
+        self.photoLibrary = PhotoLibraryService.shared
+    }
+
+    init(photoLibrary: PhotoLibraryDeleting) {
         self.photoLibrary = photoLibrary
     }
 
