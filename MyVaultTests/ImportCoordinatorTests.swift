@@ -52,20 +52,30 @@ final class ImportCoordinatorTests: XCTestCase {
     func testOnlyVerifiedAndPersistedItemsAreEligibleForRemoval() {
         let verified = importResult(.imported, asset: "asset-verified", hash: "hash-verified")
         // Import verified but the SwiftData row failed to persist: the original
-        // must NOT be offered, there is no retrievable vault copy.
+        // must NOT be offered, there is no retrievable vault copy. That is expressed
+        // by *omitting* this item's hash from `persistedHashes` below — the set is
+        // the ground truth, so listing it here would contradict the fixture.
         let persistFailed = importResult(.imported, asset: "asset-persist-failed", hash: "hash-persist-failed")
         let failed = ImportItemResult.failure(assetIdentifier: "asset-failed", fileName: "x.jpg", fileSize: 1, hash: "hash-failed", message: "nope")
         let duplicate = importResult(.duplicate, asset: "asset-duplicate", hash: "hash-duplicate")
         // Verified and persisted, but the picker never gave us an identifier:
-        // there is no handle to delete it by.
+        // there is no handle to delete it by. It *does* appear in the persisted set
+        // and is still excluded, which is the point of the second assertion.
         let noIdentifier = importResult(.imported, asset: nil, hash: "hash-no-identifier")
 
         let eligible = ImportCoordinator.removalEligibleIdentifiers(
             [verified, persistFailed, failed, duplicate, noIdentifier],
-            persistedHashes: ["hash-verified", "hash-persist-failed", "hash-no-identifier"]
+            persistedHashes: ["hash-verified", "hash-no-identifier"]
         )
 
         XCTAssertEqual(eligible, ["asset-verified"])
+
+        // And the complement: an item whose hash *is* persisted and whose identifier
+        // exists must be eligible, so the gate cannot pass by excluding everything.
+        let eligibleAgain = ImportCoordinator.removalEligibleIdentifiers(
+            [verified], persistedHashes: ["hash-verified"]
+        )
+        XCTAssertEqual(eligibleAgain, ["asset-verified"])
     }
 
     // MARK: - Confirm path

@@ -316,6 +316,21 @@ final class ImportCoordinator: ObservableObject {
     func requestPhotosAccess() {
         Task {
             let access = await photoLibrary.requestAuthorization()
+            // Limited access can read the items the user picked, but nothing else.
+            // Treating it as plain success is what left a limited user with no way to
+            // widen their selection: the notice that carries the "Manage Selected
+            // Photos" action lived in a branch that could never run, because
+            // `canReadLibrary` is true for `.limited`.
+            if access == .limited {
+                notice = Notice(
+                    title: "Limited Photos access",
+                    message: access.explanation + " You can pick more items to allow.",
+                    isError: false,
+                    action: .manageSelectedPhotos
+                )
+                return
+            }
+
             if access.canReadLibrary {
                 guard !pendingRemovalIdentifiers.isEmpty else {
                     notice = Notice(
@@ -329,13 +344,13 @@ final class ImportCoordinator: ObservableObject {
                 // for removal earlier: offer exactly those assets now.
                 let identifiers = pendingRemovalIdentifiers
                 pendingRemovalIdentifiers = []
-                removalRequest = RemovalRequest(assetIdentifiers: identifiers, limitedAccess: access == .limited)
+                removalRequest = RemovalRequest(assetIdentifiers: identifiers, limitedAccess: false)
             } else {
                 notice = Notice(
                     title: "Originals kept in Photos",
                     message: access.explanation,
                     isError: true,
-                    action: access == .limited ? .manageSelectedPhotos : (access == .denied ? .openSystemSettings : nil)
+                    action: access == .denied ? .openSystemSettings : nil
                 )
             }
         }
