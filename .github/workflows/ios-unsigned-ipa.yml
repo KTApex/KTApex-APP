@@ -77,11 +77,11 @@ jobs:
         run: |
           echo "=========== UNIT TEST FAILURES ==========="
           grep -nE "error:|XCTAssert|Test Case .* failed|failed \(|BUILD FAILED|\*\* TEST FAILED" "$RUNNER_TEMP/unit-test.log" || true
-          # Emit ONLY the compiler/test diagnostics as annotations. The full log is
-          # dominated by multi-kilobyte swiftc invocations, and an annotation that
-          # long is unreadable; a bare `error:` line is the part that matters.
-          grep -E "^[^ ]+:[0-9]+:[0-9]+: error: |^error: |xcodebuild: error|BUILD FAILED|\*\* TEST FAILED|Testing failed" "$RUNNER_TEMP/unit-test.log" \
-            | sed 's/^[[:space:]]*//' | head -8 | while IFS= read -r line; do echo "::error::$line"; done || true
+          # Emit only the short, informative lines as annotations: compile errors,
+          # failing test cases and XCTAssert diagnostics. Multi-kilobyte build
+          # invocations would make the annotation unreadable.
+          grep -aE "error: |XCTAssert|] : |Test Case '.*' failed|Test Suite '.*' failed" "$RUNNER_TEMP/unit-test.log" \
+            | sed 's/^[[:space:]]*//' | head -12 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 120 LINES ==========="
           tail -n 120 "$RUNNER_TEMP/unit-test.log" || true
           echo "========================================="
@@ -168,5 +168,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unsigned-ipa-test-log
-          path: ${{ runner.temp }}/unit-test.log
+          path: |
+            ${{ runner.temp }}/unit-test.log
+            ${{ runner.temp }}/UnitTests.xcresult
           if-no-files-found: ignore
