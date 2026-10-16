@@ -99,17 +99,23 @@ enum GalleryComposer {
 
     static func matches(_ item: VaultMedia, search: String, album: VaultAlbum? = nil) -> Bool {
         guard !search.isBlank else { return true }
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let needle = folded(search.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !needle.isEmpty else { return true }
 
-        // localizedCaseInsensitiveContains folds case and diacritics, so "cafe"
-        // finds "Café.jpg".
-        if item.fileName.localizedCaseInsensitiveContains(needle) { return true }
-        if let albumName = item.album?.name, albumName.localizedCaseInsensitiveContains(needle) { return true }
-        if DateSearchTerms.terms(for: item.createdAt).contains(where: { $0.contains(needle) }) { return true }
+        // Folded on both sides so "cafe" finds "Café" and "CAFÉ" alike.
+        // `localizedCaseInsensitiveContains` only folds case, not diacritics, so
+        // "cafe" would miss "Café.jpg" if it were used here.
+        if folded(item.fileName).contains(needle) { return true }
+        if let albumName = item.album?.name, folded(albumName).contains(needle) { return true }
+        if DateSearchTerms.terms(for: item.createdAt).contains(where: { folded($0).contains(needle) }) { return true }
         if SearchKeywords.mediaTypeTerms(for: item).contains(needle) { return true }
         if SearchKeywords.favoriteTerms.contains(needle), item.isFavorite { return true }
         return false
+    }
+
+    /// Case- and diacritic-insensitive form used for every search comparison.
+    static func folded(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).lowercased()
     }
 
     static func filter(

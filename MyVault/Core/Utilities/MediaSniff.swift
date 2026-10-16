@@ -3,9 +3,17 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Which kind of media a blob of bytes is, as far as we can tell from the bytes.
+///
+/// The raw values are the vault's own `mediaType` vocabulary (`"photo"`/`"video"`),
+/// because this value is what gets persisted on `VaultMedia`. Everything that reads
+/// that field — `VaultMedia.isVideo`, the gallery's Photos/Videos filter, the backup
+/// manifest's photo/video counts and the export file-extension fallback — treats a
+/// value that is not `"video"` as a photo, and the stored value has always been
+/// `"photo"`. Using `"image"` here would silently make every imported still image
+/// look like a video-less unknown kind to those readers.
 enum MediaKind: String, Equatable {
-    case image
-    case video
+    case image = "photo"
+    case video = "video"
 }
 
 struct MediaSniffResult: Equatable {

@@ -7,9 +7,13 @@ struct BackupEntry {
     enum Source {
         /// Small payload already in memory (the manifest).
         case data(Data)
-        /// Large payload streamed from disk, never loaded whole (vault ciphertext
-        /// of a video).
+        /// Payload read from a file already in plaintext, streamed so a large video
+        /// is never loaded whole.
         case file(URL, byteCount: Int)
+        /// A vault item identified by its `.mvenc` name. The archive decrypts it with
+        /// the device vault key while writing, so the backup holds portable plaintext
+        /// rather than ciphertext that only this device can open.
+        case plaintextInVault(fileName: String)
     }
 
     var name: String
@@ -17,6 +21,9 @@ struct BackupEntry {
     /// Only ever true for small entries: media is already compressed, so spending
     /// CPU on it would make backup creation slower for no gain.
     var compress: Bool = false
+    /// Declared uncompressed size, used only to report progress before the payload
+    /// has been read. Ignored for `.data`, whose size is known.
+    var byteCountHint: Int = 0
 }
 
 /// Streaming reader/writer for the `.mvbackup` container.
@@ -111,6 +118,7 @@ enum BackupArchive {
         switch entry.source {
         case .data(let data): return data.count
         case .file(_, let byteCount): return byteCount
+        case .plaintextInVault: return max(entry.byteCountHint, 1)
         }
     }
 
@@ -151,6 +159,19 @@ enum BackupArchive {
             payloadFile = url
             uncompressedLength = byteCount
             payloadLength = byteCount
+        case .plaintextInVault(let fileName):
+            // Decrypt with the device vault key so the backup itself holds portable
+            // bytes. This is the one place a whole item exists in memory during a
+            // backup; the vault import path already bounds items at
+            // `VaultImportService.maxItemBytes`, and the alternative — storing
+            // device-only ciphertext — makes the backup unrestorable and unverifiable.
+            guard let plaintext = try? VaultStorageService.shared.loadDecrypted(fileName: fileName),
+                  !plaintext.isEmpty else {
+                throw BackupError.failedToWrite
+            }
+            payloadData = plaintext
+            uncompressedLength = plaintext.count
+            payloadLength = plaintext.count
         }
 
         let partCount = partCount(forPayloadLength: payloadLength)

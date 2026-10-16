@@ -309,7 +309,26 @@ final class PortableBackupService: ObservableObject {
                 continue
             }
             let entryName = "media-\(index)"
-            entries.append(BackupEntry(name: entryName, source: .file(vaultURL, byteCount: item.fileSize)))
+            // The entry carries the item's *plaintext*, not the vault's `.mvenc` blob.
+            //
+            // Two reasons this is the only correct choice:
+            //
+            // 1. Portability. Vault ciphertext is sealed with the device vault key,
+            //    which is deliberately `ThisDeviceOnly`. Copying that ciphertext into
+            //    a backup would make the backup undecryptable anywhere else, which
+            //    defeats the point of a portable `.mvbackup`.
+            // 2. Verification. `contentHash` in the manifest is the SHA-256 of the
+            //    plaintext. Storing ciphertext would make every restored item fail
+            //    its decrypt-and-compare check, so no restore could ever verify.
+            //
+            // The backup file as a whole is still one authenticated encrypted stream
+            // keyed from the backup password, so the plaintext here is never exposed:
+            // it only exists inside the sealed backup and in protected staging.
+            entries.append(BackupEntry(
+                name: entryName,
+                source: .plaintextInVault(fileName: item.encryptedFileName),
+                byteCountHint: item.fileSize
+            ))
             manifestMedia.append(BackupManifest.Media(
                 id: item.id,
                 fileName: item.fileName,
