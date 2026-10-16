@@ -409,13 +409,13 @@ enum BackupCompression {
         guard !data.isEmpty, data.count <= limit else { throw BackupError.corrupted }
 
         // `compression_stream` has no zero-argument initialiser and its pointer
-        // fields are non-optional, so the struct is allocated and zeroed the way
-        // the C `compression_stream_init` macro would have done it.
+        // fields are non-optional, so the struct is allocated and initialised with
+        // cleared fields before `compression_stream_init` fills in `state`.
         let streamPointer = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
         streamPointer.initialize(to: compression_stream(
             dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
             dst_size: 0,
-            src_ptr: UnsafePointer<UInt8>(bitPattern: 1),
+            src_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
             src_size: 0,
             state: nil
         ))
@@ -443,7 +443,7 @@ enum BackupCompression {
             repeat {
                 stream.pointee.dst_ptr = chunk
                 stream.pointee.dst_size = 64 * 1024
-                status = compression_stream_process(stream, COMPRESSION_STREAM_FINALIZE)
+                status = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
                 output.append(chunk, count: 64 * 1024 - stream.pointee.dst_size)
                 if output.count > limit {
                     // Stop expanding the moment the cap is passed; the guard below
