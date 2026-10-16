@@ -87,8 +87,14 @@ struct VaultView: View {
     var body: some View {
         chrome
             .sheet(isPresented: $showingNewAlbum) { newAlbumSheet }
-            .sheet(isPresented: viewerBinding) {
-                MediaViewerView(items: visibleMedia, selectedID: viewerItem?.id)
+            // The viewer is a *full-screen* destination, not a card. A `.sheet`
+            // leaves the gallery visible around a partial-height panel, which is
+            // what made the grid appear to bleed through the viewer and made the
+            // viewer feel like an overlay. `fullScreenCover` gives it the whole
+            // screen, its own presentation layer above the tab bar, and correct
+            // safe-area ownership.
+            .fullScreenCover(item: viewerItem) { item in
+                MediaViewerView(items: visibleMedia, selectedID: item.id)
             }
             .confirmationDialog(
                 "Remove originals from Photos?",
@@ -117,17 +123,23 @@ struct VaultView: View {
             .onChange(of: visibleMedia.count) { _, _ in clampSelection() }
     }
 
-    /// Navigation, search and the toolbar. These have to sit on the
-    /// `NavigationStack` itself, so they are grouped rather than nested further.
+    /// Navigation, search and the toolbar.
+    ///
+    /// Order matters here. `.searchable` installs the search field into the
+    /// navigation bar and manages the top safe area itself, so it is attached to
+    /// the `NavigationStack` *before* any `safeAreaInset`. The top inset only
+    /// carries transient content (import progress, active-filter chips) and
+    /// collapses to zero height when there is nothing to show, so it can never
+    /// push the search field or the grid around.
     private var chrome: some View {
         navigationStack
-            .safeAreaInset(edge: .top, spacing: 0) { topBanner }
-            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
             .navigationTitle("Vault")
             .navigationDestination(isPresented: $showingTrash) { TrashView() }
             .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
-            .searchable(text: $searchText, prompt: "Photos, videos, albums, dates")
+            .searchable(text: $searchText, prompt: "Search photos, videos, albums, dates")
             .toolbar { toolbarContent }
+            .safeAreaInset(edge: .top, spacing: 0) { topBanner }
+            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
             // Stable handle for UI tests: present regardless of whether the vault
             // has content, and independent of how a TabView reports its navigation bar.
             .accessibilityIdentifier("vault.screen")
@@ -239,27 +251,27 @@ struct VaultView: View {
         }
     }
 
+    /// Transient content above the grid. Rendered as *nothing* when idle so the
+    /// inset contributes no height and cannot shift the search field or grid.
     @ViewBuilder
     private var topBanner: some View {
-        VStack(spacing: 8) {
-            if importer.isWorking {
-                MVProgressCard(
-                    title: importer.workingLabel,
-                    detail: "Items already verified stay in the vault.",
-                    progress: importer.progress,
-                    onCancel: importer.canCancel ? { importer.cancel() } : nil
-                )
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+        if importer.isWorking || (isFiltered && !visibleMedia.isEmpty) {
+            VStack(spacing: 8) {
+                if importer.isWorking {
+                    MVProgressCard(
+                        title: importer.workingLabel,
+                        detail: "Items already verified stay in the vault.",
+                        progress: importer.progress,
+                        onCancel: importer.canCancel ? { importer.cancel() } : nil
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                }
+                if isFiltered && !visibleMedia.isEmpty {
+                    activeFilterBar
+                }
             }
-            if isFiltered && !visibleMedia.isEmpty {
-                activeFilterBar
-            }
-        }
-        .background {
-            if importer.isWorking || (isFiltered && !visibleMedia.isEmpty) {
-                Rectangle().fill(.bar)
-            }
+            .background(.bar)
         }
     }
 
@@ -282,6 +294,8 @@ struct VaultView: View {
         }
     }
 
+    /// Selection actions, docked above the tab bar. Absent (zero height) unless a
+    /// selection is active, so the grid's last row is never reserved against.
     @ViewBuilder
     private var selectionBar: some View {
         if isSelecting {
@@ -304,8 +318,8 @@ struct VaultView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                 }
-                .background(.bar)
             }
+            .background(.bar)
             .transition(.move(edge: .bottom))
         }
     }
@@ -452,10 +466,6 @@ struct VaultView: View {
 
     private var alertBinding: Binding<Bool> {
         Binding(get: { alertItem != nil }, set: { if !$0 { alertItem = nil } })
-    }
-
-    private var viewerBinding: Binding<Bool> {
-        Binding(get: { viewerItem != nil }, set: { if !$0 { viewerItem = nil } })
     }
 
     private var albumBinding: Binding<String?> {

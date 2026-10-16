@@ -26,6 +26,10 @@ struct GalleryGrid: View {
                 ForEach(sections) { section in
                     Section {
                         ForEach(section.items) { item in
+                            // The cell already fills its grid slot and its thumbnail
+                            // uses `scaledToFill`; adding `.aspectRatio(1, .fill)`
+                            // here double-constrained the layout, which is what
+                            // produced stretched tiles and uneven gaps.
                             GalleryThumbCell(
                                 item: item,
                                 isSelecting: isSelecting,
@@ -39,14 +43,18 @@ struct GalleryGrid: View {
                                     }
                                 }
                             )
-                            .aspectRatio(1, contentMode: .fill)
                         }
                     } header: {
                         GallerySectionHeader(section: section)
                     }
                 }
             }
+            // Keeps the final row clear of the tab bar even before the tab bar's
+            // own inset is accounted for, and gives the grid breathing room at the
+            // end of the scroll rather than butting against the screen edge.
+            .padding(.bottom, 12)
         }
+        .background(MVColor.galleryBackground)
         .scrollDismissesKeyboard(.immediately)
     }
 }
@@ -55,20 +63,25 @@ struct GallerySectionHeader: View {
     let section: GallerySection
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(section.title)
-                .font(MVFont.headline)
-            if let subtitle = section.subtitle {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(section.title)
+                    .font(MVFont.headline)
+                if let subtitle = section.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Divider()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
+        // Pinned headers sit on top of moving thumbnails, so the background must be
+        // fully opaque: a translucent material lets the grid show through the title.
+        .background(MVColor.galleryBackground)
         .accessibilityElement(children: .combine)
     }
 }
@@ -131,6 +144,11 @@ struct GalleryThumbCell: View {
                 }
             }
             .clipped()
+            // A `scaledToFill` image has no intrinsic size, so the tile must declare
+            // its own square ratio *here*, inside the cell. Doing it on the outside
+            // (as a modifier on the cell in the grid) double-constrained the slot and
+            // produced stretched tiles on some column widths.
+            .aspectRatio(1, contentMode: .fit)
             .overlay(alignment: .topLeading) { albumBadge }
             .overlay(alignment: .topTrailing) { favoriteBadge }
             .overlay(alignment: .bottomTrailing) { durationBadge }

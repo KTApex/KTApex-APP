@@ -47,6 +47,25 @@ struct MVColors {
     static let cardGradientLight = [Color.white, Color(.systemGray6)]
     static let cardGradientDark = [Color(.systemGray6).opacity(0.35), Color.black.opacity(0.2)]
 }
+
+/// Semantic colours for the vault surfaces.
+///
+/// The gallery deliberately uses the system grouped-background colours so it tracks
+/// Light/Dark mode and the elevated-surface treatment the user expects, while the
+/// media viewer uses a near-black that never changes with the system — a photo
+/// should be judged against a constant backdrop, exactly as a private vault should
+/// not reveal the app's chrome behind its media.
+enum MVColor {
+    /// Backdrop for the full-screen media viewer. Fixed, not `.black`, so it reads
+    /// as a deliberate surface rather than a void.
+    static let viewerBackground = Color(red: 0.04, green: 0.04, blue: 0.05)
+
+    /// Gallery background: grouped system background in both appearances.
+    static let galleryBackground = Color(.systemGroupedBackground)
+
+    /// Thin separator used between gallery sections.
+    static let hairline = Color(.separator).opacity(0.5)
+}
 struct MVRadius { static let s: CGFloat = 10; static let m: CGFloat = 16; static let l: CGFloat = 24 }
 struct MVShadow {
     static func card(_ colorScheme: ColorScheme) -> Color { colorScheme == .dark ? .black.opacity(0.5) : .black.opacity(0.08) }
