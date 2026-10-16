@@ -77,11 +77,11 @@ jobs:
         run: |
           echo "=========== UNIT TEST FAILURES ==========="
           grep -nE "error:|XCTAssert|Test Case .* failed|failed \(|BUILD FAILED|\*\* TEST FAILED" "$RUNNER_TEMP/unit-test.log" || true
-          # Surface the first real diagnostics as check annotations: they are readable
-          # in the Actions UI and through the public check-run API without needing to
-          # sign in and download the log artifact.
-          grep -E "(error|warning): |BUILD FAILED|\*\* TEST FAILED|xcodebuild: error|Unable to find|Simulator|could not be|Code Signing|errSec" "$RUNNER_TEMP/unit-test.log" \
-            | head -10 | while IFS= read -r line; do echo "::error::$line"; done || true
+          # Emit ONLY the compiler/test diagnostics as annotations. The full log is
+          # dominated by multi-kilobyte swiftc invocations, and an annotation that
+          # long is unreadable; a bare `error:` line is the part that matters.
+          grep -E "^[^ ]+:[0-9]+:[0-9]+: error: |^error: |xcodebuild: error|BUILD FAILED|\*\* TEST FAILED|Testing failed" "$RUNNER_TEMP/unit-test.log" \
+            | sed 's/^[[:space:]]*//' | head -8 | while IFS= read -r line; do echo "::error::$line"; done || true
           echo "=========== LAST 120 LINES ==========="
           tail -n 120 "$RUNNER_TEMP/unit-test.log" || true
           echo "========================================="
