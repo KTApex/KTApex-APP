@@ -168,7 +168,7 @@ final class BackupArchiveTests: XCTestCase {
 
         expectFailure({
             _ = try BackupArchive.read(from: url, password: password, into: staged)
-        }, message: "a tampered salt must not authenticate")
+        }, "a tampered salt must not authenticate")
     }
 
     func testTruncatedBackupIsRejected() throws {
@@ -182,7 +182,7 @@ final class BackupArchiveTests: XCTestCase {
 
         expectFailure({
             _ = try BackupArchive.read(from: url, password: password, into: staged)
-        }, message: "a truncated backup must not decrypt")
+        }, "a truncated backup must not decrypt")
     }
 
     func testEmptyFileIsNotABackup() throws {
