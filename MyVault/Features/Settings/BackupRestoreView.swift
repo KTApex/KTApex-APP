@@ -121,6 +121,7 @@ struct BackupRestoreView: View {
                 Text(summaryDetail(value))
             }
             .vaultShareSheet(prepared: $shareBundle)
+            .onDisappear { discardIncomingCopy() }
     }
 
     private var list: some View {
@@ -265,11 +266,17 @@ struct BackupRestoreView: View {
 
     // MARK: - Restoring
 
-    private func handlePickedFile(_ result: Result<URL, Error>) {
+    /// The `fileImporter` completion hands back an array even when only one file can
+    /// be chosen, so the first (and only) URL is unwrapped here.
+    private func handlePickedFile(_ result: Result<[URL], Error>) {
         switch result {
         case .failure:
             alertMessage = "That file could not be opened."
-        case .success(let url):
+        case .success(let urls):
+            guard let url = urls.first else {
+                alertMessage = "That file could not be opened."
+                return
+            }
             // A file chosen in another app's sandbox needs explicit access.
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -282,7 +289,14 @@ struct BackupRestoreView: View {
                 // security scope is only needed for a moment and a hostile file name
                 // never reaches the file system.
                 let directory = try SecureScratch.makeDirectory(prefix: "incoming")
-                let local = try SecureScratch.copy(url, named: "incoming.mvbackup", in: directory)
+                let local: URL
+                do {
+                    local = try SecureScratch.copy(url, named: "incoming.mvbackup", in: directory)
+                } catch {
+                    SecureScratch.removeDirectory(directory)
+                    throw error
+                }
+                discardIncomingCopy()
                 selectedBackupURL = local
                 inspectedVersion = Int(header.formatVersion)
                 restorePassword = ""
@@ -292,6 +306,18 @@ struct BackupRestoreView: View {
                 alertMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Drops the scratch copy of the chosen file once it is no longer needed, so a
+    /// backup does not linger in temporary storage after the sheet is dismissed.
+    /// Only ever removes a directory this screen created.
+    private func discardIncomingCopy() {
+        guard let url = selectedBackupURL else { return }
+        let directory = url.deletingLastPathComponent()
+        if directory.lastPathComponent.hasPrefix("incoming-") {
+            SecureScratch.removeDirectory(directory)
+        }
+        selectedBackupURL = nil
     }
 
     private func preparePreview() {
