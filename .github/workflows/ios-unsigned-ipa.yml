@@ -27,49 +27,38 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Write empty entitlements
-        run: |
-          cat > "$GITHUB_WORKSPACE/empty.entitlements" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict/>
-          </plist>
-          EOF
-
-      - name: Archive (ad-hoc signed, no provisioning profile)
-        id: archive
+      - name: Build unsigned device binary
+        id: build
         run: |
           set -o pipefail
-          # CODE_SIGN_IDENTITY="-" is ad-hoc signing: no certificate, no team,
-          # no profile. Entitlements that require a real profile (App Groups,
-          # iCloud) are replaced with an empty file so codesign can succeed.
-          xcodebuild archive \
+          # CODE_SIGNING_ALLOWED=NO produces a fully unsigned device binary:
+          # ad-hoc signing (CODE_SIGN_IDENTITY="-") is rejected by recent SDKs
+          # ("Ad Hoc code signing is not allowed"), so signing must be skipped.
+          xcodebuild build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/MyVault.xcarchive" \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" \
             DEVELOPMENT_TEAM= \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="-" \
             PROVISIONING_PROFILE_SPECIFIER= \
-            CODE_SIGN_ENTITLEMENTS="$GITHUB_WORKSPACE/empty.entitlements" \
-            2>&1 | tee "$RUNNER_TEMP/archive.log"
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/build.log"
 
-      - name: Show archive errors
-        if: failure() && steps.archive.outcome == 'failure'
+      - name: Show build errors
+        if: failure() && steps.build.outcome == 'failure'
         run: |
-          echo "=========== ARCHIVE DIAGNOSTICS ==========="
-          grep -E "error: |Code Signing|requires a provisioning profile|No profiles|BUILD FAILED|The following build commands failed" "$RUNNER_TEMP/archive.log" | head -20 || true
+          echo "=========== BUILD DIAGNOSTICS ==========="
+          grep -E "error: |Code Signing|requires a provisioning profile|No profiles|BUILD FAILED|The following build commands failed" "$RUNNER_TEMP/build.log" | head -20 || true
           echo "=========== LAST 60 LINES ==========="
-          tail -n 60 "$RUNNER_TEMP/archive.log" || true
+          tail -n 60 "$RUNNER_TEMP/build.log" || true
 
       - name: Package IPA
         run: |
-          APP_PATH=$(find "$RUNNER_TEMP/MyVault.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -1)
-          if [ -z "$APP_PATH" ]; then echo "::error::No .app found in archive"; exit 1; fi
+          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP_PATH" ]; then echo "::error::No .app found in build products"; ls -R "$RUNNER_TEMP/DerivedData/Build/Products" || true; exit 1; fi
           cd "$RUNNER_TEMP"
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
