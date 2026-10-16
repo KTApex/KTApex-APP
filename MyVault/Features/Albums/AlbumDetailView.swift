@@ -59,7 +59,7 @@ struct AlbumDetailView: View {
         .toolbar { toolbarContent }
         // A full-screen viewer, matching the vault: a sheet would let the album
         // grid show around the media and would not own the screen.
-        .fullScreenCover(item: viewerItem) { item in
+        .fullScreenCover(item: $viewerItem) { item in
             MediaViewerView(items: items, selectedID: item.id)
         }
         .vaultShareSheet(prepared: $shareBundle)

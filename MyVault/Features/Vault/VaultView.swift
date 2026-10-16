@@ -93,7 +93,7 @@ struct VaultView: View {
             // viewer feel like an overlay. `fullScreenCover` gives it the whole
             // screen, its own presentation layer above the tab bar, and correct
             // safe-area ownership.
-            .fullScreenCover(item: viewerItem) { item in
+            .fullScreenCover(item: $viewerItem) { item in
                 MediaViewerView(items: visibleMedia, selectedID: item.id)
             }
             .confirmationDialog(
