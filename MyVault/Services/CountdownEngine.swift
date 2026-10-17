@@ -65,7 +65,12 @@ enum CountdownEngine {
         return calendar.date(from: comps)
     }
 
-    static func notificationTitle(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = false) -> String {
+    /// `privacyMode` defaults to **true** on purpose.
+    ///
+    /// The function default must match the app's own default, otherwise a caller that
+    /// forgets the argument silently produces a banner containing the event title. The
+    /// safe value has to be the one you get by omission.
+    static func notificationTitle(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = true) -> String {
         // A neutral title is used in privacy mode: the event type alone ("Birthday
         // Reminder") already hints at a date worth knowing, so the generic wording is
         // used for every type.
@@ -76,7 +81,8 @@ enum CountdownEngine {
         }
     }
 
-    static func notificationBody(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = false) -> String {
+    /// See `notificationTitle` for why `privacyMode` defaults to true.
+    static func notificationBody(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = true) -> String {
         // Privacy mode: no title, no type, no date — just a nudge to open the app. The
         // tap still deep-links because the identifier travels in `userInfo`.
         if privacyMode {

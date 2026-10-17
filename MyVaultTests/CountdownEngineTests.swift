@@ -63,8 +63,10 @@ final class CountdownEngineTests: XCTestCase {
     func testNotificationBody() {
         let e = event(date: Date())
         e.title = "Anniversary"
-        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("today"))
-        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 1).contains("tomorrow"))
+        // Explicitly non-private: these assert the wording used when the user has
+        // turned the privacy toggle off.
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: false).contains("today"))
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 1, privacyMode: false).contains("tomorrow"))
     }
 
     // MARK: - Notification privacy mode
