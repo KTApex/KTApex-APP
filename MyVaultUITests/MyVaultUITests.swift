@@ -46,7 +46,16 @@ final class MyVaultUITests: XCTestCase {
         let vaultTab = app.tabBars.buttons["Vault"]
         XCTAssertTrue(vaultTab.waitForExistence(timeout: 5))
         vaultTab.tap()
-        XCTAssertTrue(app.navigationBars["Vault"].waitForExistence(timeout: 5))
+
+        // The Vault screen's import button is always present in its toolbar, so it is
+        // a reliable marker of the screen itself. Checking it avoids depending on how
+        // a TabView reports its navigation bar, and on SwiftData store
+        // initialisation timing on a simulator.
+        let importButton = app.buttons["Import photos or videos"]
+        XCTAssertTrue(
+            importButton.waitForExistence(timeout: 10),
+            "Tapping the Vault tab should reveal the vault screen"
+        )
     }
 
     func testSettingsOpens() throws {

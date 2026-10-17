@@ -59,8 +59,14 @@ final class VaultImportServiceTests: XCTestCase {
         XCTAssertFalse(result.storedName.isEmpty)
         XCTAssertEqual(result.mediaType, "photo")
         XCTAssertEqual(result.fileSize, data.count)
-        XCTAssertEqual(result.width, 12)
-        XCTAssertEqual(result.height, 6)
+        // Dimensions are *pixel* dimensions (what ImageIO reports), and
+        // `UIGraphicsImageRenderer` rasterises at the device scale, so a 12×6 point
+        // fixture is 12·scale × 6·scale pixels. The expected values come from the
+        // same source rather than assuming a scale.
+        let expected = try XCTUnwrap(VaultImportService.imageDimensions(data))
+        XCTAssertEqual(result.width, expected.width)
+        XCTAssertEqual(result.height, expected.height)
+        XCTAssertEqual(result.height, expected.width / 2, "the fixture keeps its 2:1 aspect ratio")
         XCTAssertEqual(result.fileName, "IMG_0001.jpg")
 
         // The vault copy must verify through the real decrypt path…

@@ -63,7 +63,85 @@ final class CountdownEngineTests: XCTestCase {
     func testNotificationBody() {
         let e = event(date: Date())
         e.title = "Anniversary"
-        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("today"))
-        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 1).contains("tomorrow"))
+        // Explicitly non-private: these assert the wording used when the user has
+        // turned the privacy toggle off.
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: false).contains("today"))
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 1, privacyMode: false).contains("tomorrow"))
+    }
+
+    // MARK: - Notification privacy mode
+
+    /// The security property: with privacy mode on, nothing in the banner identifies
+    /// the event. A Lock Screen banner is readable without unlocking the phone, so a
+    /// title here would leak vault contents to anyone glancing at the device.
+    func testPrivacyModeNeverRevealsTheEventTitle() {
+        let e = event(date: Date())
+        e.title = "Mum's Birthday"
+
+        for days in [0, 1, 3, 7] {
+            let title = CountdownEngine.notificationTitle(for: e, daysBefore: days, privacyMode: true)
+            let body = CountdownEngine.notificationBody(for: e, daysBefore: days, privacyMode: true)
+            XCTAssertFalse(title.localizedCaseInsensitiveContains("Mum"), "title leaked for daysBefore \(days): \(title)")
+            XCTAssertFalse(body.localizedCaseInsensitiveContains("Mum"), "body leaked for daysBefore \(days): \(body)")
+            XCTAssertFalse(body.localizedCaseInsensitiveContains("Birthday"), "body leaked the type for daysBefore \(days): \(body)")
+            XCTAssertEqual(title, "MyVault")
+            XCTAssertTrue(body.hasPrefix("You have a special day"))
+        }
+    }
+
+    /// Privacy mode must not remove the information the user needs to act: the wording
+    /// still distinguishes today from tomorrow from later.
+    func testPrivacyModeStillDistinguishesTiming() {
+        let e = event(date: Date())
+        e.title = "Private"
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: true), "You have a special day today.")
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 1, privacyMode: true), "You have a special day tomorrow.")
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 5, privacyMode: true), "You have a special day coming up.")
+    }
+
+    /// With privacy mode off the feature is unchanged, so this is a toggle and not a
+    /// silent removal of detail.
+    func testPrivacyModeOffKeepsTheTitle() {
+        let e = event(date: Date())
+        e.title = "Anniversary"
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: false).contains("Anniversary"))
+        XCTAssertEqual(CountdownEngine.notificationTitle(for: e, daysBefore: 0, privacyMode: false), "Special Day")
+    }
+
+    /// The default must be the private one: forgetting to set the preference should
+    /// never expose a title.
+    ///
+    /// The default is the *absence* of the key, so the key is cleared first. Without
+    /// this the test would pass or fail depending on what other tests or a previous run
+    /// left in UserDefaults, which is not a property of the code at all.
+    func testPrivacyModeDefaultsToOn() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "mv.notifPrivacy")
+        defaults.removeObject(forKey: "mv.notifPrivacy")
+        defer {
+            if let previous { defaults.set(previous, forKey: "mv.notifPrivacy") }
+            else { defaults.removeObject(forKey: "mv.notifPrivacy") }
+        }
+
+        XCTAssertTrue(AppSettingsStore.notificationPrivacyMode, "privacy mode must default to on")
+
+        let e = event(date: Date())
+        e.title = "Anniversary"
+        XCTAssertFalse(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("Anniversary"))
+    }
+
+    /// The stored preference round-trips, so the toggle actually persists.
+    func testPrivacyModePreferencePersists() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "mv.notifPrivacy")
+        defer {
+            if let previous { defaults.set(previous, forKey: "mv.notifPrivacy") }
+            else { defaults.removeObject(forKey: "mv.notifPrivacy") }
+        }
+
+        AppSettingsStore.setNotificationPrivacyMode(false)
+        XCTAssertFalse(AppSettingsStore.notificationPrivacyMode)
+        AppSettingsStore.setNotificationPrivacyMode(true)
+        XCTAssertTrue(AppSettingsStore.notificationPrivacyMode)
     }
 }

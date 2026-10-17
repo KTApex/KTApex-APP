@@ -166,6 +166,7 @@ struct BackupHeader: Equatable {
 /// neither should learn anything about the backup's internal structure.
 enum BackupError: LocalizedError, Equatable {
     case notABackupFile
+    case nothingToBackUp
     case unsupportedVersion(Int)
     case unsupportedKeyDerivation
     case corrupted
@@ -181,6 +182,8 @@ enum BackupError: LocalizedError, Equatable {
         switch self {
         case .notABackupFile:
             return "This file is not a MyVault backup."
+        case .nothingToBackUp:
+            return "There is nothing in the vault to back up yet."
         case .unsupportedVersion(let version):
             return "This backup was created by a newer version of MyVault (format \(version)). Update the app and try again."
         case .unsupportedKeyDerivation:

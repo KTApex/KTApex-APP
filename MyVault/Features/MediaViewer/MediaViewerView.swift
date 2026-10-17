@@ -47,15 +47,20 @@ struct MediaViewerView: View {
     }
 
     var body: some View {
+        // The black backdrop is applied *outside* the NavigationStack and ignores
+        // the safe area, so it is the true bottom layer of the whole presentation.
+        // The navigation bar then renders over it in its inline/dark form, which is
+        // what makes the viewer look like an immersive surface rather than a grid
+        // with a toolbar bolted on.
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
                 if item == nil {
                     VStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle").font(.largeTitle)
                         Text("This item is no longer available.")
                     }
                     .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     TabView(selection: $index) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { position, media in
@@ -64,13 +69,15 @@ struct MediaViewerView: View {
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
-                    .ignoresSafeArea()
                     .accessibilityLabel("Media viewer")
                 }
             }
             .navigationTitle(item?.fileName ?? "")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar { toolbarContent }
+            .statusBarHidden(false)
             .sheet(isPresented: $showingInfo) { infoSheet }
             .alert(alertItem?.title ?? "", isPresented: alertBinding, presenting: alertItem) { _ in
                 Button("OK", role: .cancel) { alertItem = nil }
@@ -79,6 +86,7 @@ struct MediaViewerView: View {
             }
             .vaultShareSheet(prepared: $shareBundle)
         }
+        .background(MVColor.viewerBackground.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .onAppear { syncIndex() }
         .onChange(of: items.count) { _, _ in syncIndex() }
@@ -299,7 +307,6 @@ private struct MediaPageView: View {
                         .scaledToFit()
                         .scaleEffect(scale)
                         .offset(offset)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
                         .gesture(magnificationGesture, including: .all)
                         // While zoomed the image owns the drag (so panning works and
                         // paging is suspended); at 1× the drag is disabled so the
@@ -309,7 +316,6 @@ private struct MediaPageView: View {
                         .accessibilityLabel(media.isVideo ? "Video" : "Photo")
                 } else if let player {
                     VideoPlayer(player: player)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
                 } else if let loadFailure {
                     VStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle")
@@ -324,6 +330,9 @@ private struct MediaPageView: View {
                     ProgressView().tint(.white)
                 }
             }
+            // The page fills whatever the pager gives it; `scaledToFit` on the media
+            // keeps its aspect ratio, so the image is centred without being
+            // double-constrained by per-branch frames.
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .task(id: media.id) { await load() }

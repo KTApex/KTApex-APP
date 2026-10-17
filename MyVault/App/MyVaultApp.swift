@@ -6,14 +6,38 @@ import UserNotifications
 struct MyVaultApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
-    @StateObject private var themeManager = ThemeManager()
+    @StateObject private var themeManager = ThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([VaultAlbum.self, VaultMedia.self, SpecialDay.self, ReminderConfiguration.self, AppSettings.self, BackupMetadata.self])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        // The store lives in the app's own Application Support directory.
+        //
+        // The target declares an App Group (for the widget's `UserDefaults`), and if
+        // SwiftData is left to pick a location itself it can resolve the store into
+        // that shared container. On a simulator (or any build where the App Group is
+        // not provisioned) that directory does not exist, so opening the store fails
+        // and every `@Query`-backed screen stays blank. Pinning the URL keeps the
+        // vault database in the app sandbox on every device, and the App Group is
+        // used only for the non-sensitive widget summary.
+        let storeURL: URL = {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            return base.appendingPathComponent("MyVault.store")
+        }()
+        // `cloudKitDatabase: .none` is intentional: MyVault is local-only by design,
+        // so the store is never mirrored to iCloud behind the user's back.
+        let config = ModelConfiguration(schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
         do { return try ModelContainer(for: schema, configurations: [config]) }
-        catch { fatalError("Could not create ModelContainer: \(error)") }
+        catch {
+            // A corrupt or unreadable store must not brick the app: fall back to an
+            // in-memory container so the UI still works, and report it in the log.
+            NSLog("MyVault: persistent store unavailable (\\(error)); using in-memory store")
+            let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            do { return try ModelContainer(for: schema, configurations: [memory]) }
+            catch { fatalError("Could not create ModelContainer: \\(error)") }
+        }
     }()
 
     var body: some Scene {
@@ -25,6 +49,21 @@ struct MyVaultApp: App {
                 .tint(themeManager.accentColorValue)
                 .onAppear { configure() }
                 .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
+                // A file opened while the app is running (foreground or background) is
+                // delivered here. This is the modern SwiftUI entry point and coexists
+                // with the AppDelegate method: whichever the system uses, both end up
+                // at `appState.openBackupDocument(at:)`.
+                .onOpenURL { url in
+                    guard MyVaultBackupType.looksLikeBackup(url) else { return }
+                    appState.openBackupDocument(at: url)
+                }
+                // The AppDelegate method is still required, because when the app is not
+                // running iOS delivers the URL before SwiftUI exists. It posts through
+                // NotificationCenter; this picks that up once the scene is alive.
+                .onReceive(NotificationCenter.default.publisher(for: .didOpenBackupDocument)) { note in
+                    guard let url = note.object as? URL else { return }
+                    appState.openBackupDocument(at: url)
+                }
         }
         .modelContainer(sharedModelContainer)
     }
@@ -38,6 +77,12 @@ struct MyVaultApp: App {
         Task { @MainActor in
             let events = (try? sharedModelContainer.mainContext.fetch(FetchDescriptor<SpecialDay>())) ?? []
             WidgetSummaryService.refresh(events: events)
+        }
+        // A cold launch caused by opening a .mvbackup: the URL was captured by
+        // `AppDelegate` before this scene existed, so it is collected exactly once
+        // here. The import screen is only presented after the vault is unlocked.
+        if let url = appDelegate.takePendingLaunchURL() {
+            appState.openBackupDocument(at: url)
         }
     }
 

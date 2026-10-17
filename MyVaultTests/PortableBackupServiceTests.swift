@@ -311,6 +311,84 @@ final class PortableBackupServiceTests: XCTestCase {
         XCTAssertEqual(VaultStorageService.shared.storedFileNames().count, filesBefore)
     }
 
+    @MainActor
+    func testCommitFailureRollsBackAndPreservesTheVault() async throws {
+        try seedMedia("one")
+        try seedMedia("two")
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+
+        // Target vault already holds something unrelated; a failed restore must
+        // leave it exactly as it was.
+        let freshContext = ModelContext(try Self.makeContainer())
+        let existing = try seedMedia("already-here", into: freshContext)
+        try freshContext.save()
+        let filesBefore = VaultStorageService.shared.storedFileNames().count
+
+        let service = PortableBackupService.shared
+        service.forceCommitFailure = true
+        defer { service.forceCommitFailure = false }
+        do {
+            _ = try await restore(artifact, into: freshContext)
+            XCTFail("A forced commit failure must fail the restore")
+        } catch let error as BackupError {
+            XCTAssertEqual(error, .failedToWrite)
+        }
+
+        let remaining = try freshContext.fetch(FetchDescriptor<VaultMedia>())
+        XCTAssertEqual(remaining.count, 1, "the failed restore must not add any rows")
+        XCTAssertTrue(remaining.contains { $0.id == existing.id }, "the pre-existing item must survive the rollback")
+        XCTAssertEqual(
+            VaultStorageService.shared.storedFileNames().count, filesBefore,
+            "ciphertext staged in Phase A must be removed when the commit fails"
+        )
+        XCTAssertTrue(
+            VaultStorageService.shared.verify(fileName: existing.encryptedFileName, matchesPlaintextHash: existing.contentHash),
+            "the untouched item must still decrypt after the rollback"
+        )
+    }
+
+    @MainActor
+    func testRestoredSettingsApplyToDefaultsAndThemeManager() async throws {
+        let defaults = UserDefaults.standard
+        let originalTheme = defaults.string(forKey: "mv.theme")
+        let originalAccent = defaults.string(forKey: "mv.accent")
+        let originalColumns = defaults.object(forKey: "mv.galleryColumns") as? Int
+        let originalMode = ThemeManager.shared.mode
+        let originalAccentValue = ThemeManager.shared.accent
+        defer {
+            defaults.set(originalTheme, forKey: "mv.theme")
+            defaults.set(originalAccent, forKey: "mv.accent")
+            defaults.set(originalColumns, forKey: "mv.galleryColumns")
+            ThemeManager.shared.mode = originalMode
+            ThemeManager.shared.accent = originalAccentValue
+        }
+
+        // Back up a vault configured with non-default preferences.
+        defaults.set("dark", forKey: "mv.theme")
+        defaults.set("purple", forKey: "mv.accent")
+        defaults.set(5, forKey: "mv.galleryColumns")
+        try seedMedia("one")
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+
+        // Restore onto a "different device": defaults back to factory, and the
+        // running manager holds the factory theme.
+        defaults.set("system", forKey: "mv.theme")
+        defaults.set("blue", forKey: "mv.accent")
+        ThemeManager.shared.mode = .system
+        ThemeManager.shared.accent = .blue
+
+        let freshContext = ModelContext(try Self.makeContainer())
+        _ = try await restore(artifact, into: freshContext)
+
+        XCTAssertEqual(defaults.string(forKey: "mv.theme"), "dark")
+        XCTAssertEqual(defaults.string(forKey: "mv.accent"), "purple")
+        XCTAssertEqual(defaults.object(forKey: "mv.galleryColumns") as? Int, 5)
+        XCTAssertEqual(ThemeManager.shared.mode, .dark, "the restored theme must apply to the live manager")
+        XCTAssertEqual(ThemeManager.shared.accent, .purple, "the restored accent must apply to the live manager")
+    }
+
     // MARK: - Secrets and cleanup
 
     @MainActor
@@ -391,5 +469,212 @@ final class PortableBackupServiceTests: XCTestCase {
         XCTAssertTrue(BackupPasswordGuidance.assess("password1").isAcceptable)
         XCTAssertFalse(BackupPasswordGuidance.assess("password1").isStrong)
         XCTAssertTrue(BackupPasswordGuidance.assess("Password-not-1!").isStrong)
+    }
+
+    // MARK: - Truncated and empty files
+
+    /// A file that was cut short must be rejected *before* anything is written,
+    /// and the vault must be exactly as it was afterwards.
+    @MainActor
+    func testTruncatedBackupIsRejectedAndChangesNothing() async throws {
+        try seedMedia("one")
+        try seedMedia("two")
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+
+        // Keep the valid header (so this is still recognised as a backup) but drop
+        // everything after the first few hundred bytes of ciphertext.
+        let full = try Data(contentsOf: artifact.url)
+        XCTAssertGreaterThan(full.count, 200)
+        try full.prefix(200).write(to: artifact.url)
+
+        let freshContext = ModelContext(try Self.makeContainer())
+        let filesBefore = VaultStorageService.shared.storedFileNames().count
+        do {
+            _ = try await restore(artifact, into: freshContext)
+            XCTFail("A truncated backup must not restore")
+        } catch let error as BackupError {
+            // Either authentication fails outright, or the stream ends early and the
+            // reader reports the file as damaged. Both are safe and both are expected.
+            XCTAssertTrue(
+                error == .wrongPasswordOrDamaged || error == .corrupted,
+                "expected a safe rejection, got \(error)"
+            )
+        }
+        XCTAssertEqual(try freshContext.fetch(FetchDescriptor<VaultMedia>()).count, 0)
+        XCTAssertEqual(VaultStorageService.shared.storedFileNames().count, filesBefore)
+    }
+
+    /// A header-only file is structurally a backup with no entries: it must be
+    /// refused rather than treated as a valid empty restore.
+    @MainActor
+    func testHeaderOnlyBackupIsRejected() async throws {
+        try seedMedia("one")
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+
+        let header = try BackupHeader.readHeader(from: artifact.url)
+        try header.bytes.write(to: artifact.url)
+
+        let freshContext = ModelContext(try Self.makeContainer())
+        do {
+            _ = try await restore(artifact, into: freshContext)
+            XCTFail("A backup with no entries must not restore")
+        } catch let error as BackupError {
+            XCTAssertTrue(
+                error == .corrupted || error == .wrongPasswordOrDamaged,
+                "expected a safe rejection, got \(error)"
+            )
+        }
+        XCTAssertEqual(try freshContext.fetch(FetchDescriptor<VaultMedia>()).count, 0)
+    }
+
+    /// A backup of an empty vault is refused at creation time with its own error, so
+    /// the UI can say "there is nothing to back up" instead of blaming the password.
+    @MainActor
+    func testEmptyVaultCannotBeBackedUp() async {
+        do {
+            _ = try await PortableBackupService.shared.createBackup(
+                password: password, context: context, progress: { _ in }
+            )
+            XCTFail("An empty vault must not produce a backup")
+        } catch let error as BackupError {
+            XCTAssertEqual(error, .nothingToBackUp)
+        } catch {
+            XCTFail("expected .nothingToBackUp, got \(error)")
+        }
+    }
+
+    // MARK: - Versioning
+
+    /// A file from a future format version must be rejected up front, without a
+    /// password and without attempting to parse the body.
+    func testUnsupportedBackupVersionIsRejected() throws {
+        let header = BackupHeader(
+            formatVersion: BackupFormat.currentVersion &+ 1,
+            kdf: BackupFormat.kdfPBKDF2SHA256,
+            iterations: BackupFormat.defaultIterations,
+            salt: Data(repeating: 0x11, count: BackupFormat.saltLength)
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("future-\(UUID().uuidString).mvbackup")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try header.bytes.write(to: url)
+
+        XCTAssertThrowsError(try PortableBackupService.inspect(url)) { error in
+            XCTAssertEqual(error as? BackupError, .unsupportedVersion(Int(header.formatVersion)))
+        }
+
+        // The reader refuses it too, so even a full restore attempt cannot proceed.
+        let staging = try SecureScratch.makeDirectory(prefix: "test-version")
+        defer { SecureScratch.removeDirectory(staging) }
+        XCTAssertThrowsError(
+            try BackupArchive.read(from: url, password: password, into: staging)
+        ) { error in
+            XCTAssertEqual(error as? BackupError, .unsupportedVersion(Int(header.formatVersion)))
+        }
+    }
+
+    // MARK: - Scale
+
+    /// Many items at once: every payload must round-trip, stay distinct, and verify.
+    @MainActor
+    func testManyItemsRestoreWithDistinctPayloads() async throws {
+        let count = 40
+        for index in 0..<count {
+            try seedMedia("bulk-\(index)", isVideo: index.isMultiple(of: 5))
+        }
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+        XCTAssertEqual(artifact.itemCount, count)
+
+        let freshContext = ModelContext(try Self.makeContainer())
+        let summary = try await restore(artifact, into: freshContext)
+
+        XCTAssertEqual(summary.media, count)
+        XCTAssertEqual(summary.verified, count)
+        XCTAssertEqual(summary.failedVerification, 0)
+
+        let restored = try freshContext.fetch(FetchDescriptor<VaultMedia>())
+        XCTAssertEqual(restored.count, count)
+        // Each fixture payload is unique, so no two restored rows may share a hash.
+        XCTAssertEqual(Set(restored.map(\.contentHash)).count, count)
+        XCTAssertEqual(Set(restored.map(\.encryptedFileName)).count, count)
+    }
+
+    /// Album membership survives a restore, and items in no album stay in no album.
+    @MainActor
+    func testAlbumMembershipIsRestoredExactly() async throws {
+        let trip = VaultAlbum(name: "Trip")
+        let family = VaultAlbum(name: "Family")
+        context.insert(trip)
+        context.insert(family)
+        try seedMedia("paris", album: trip)
+        try seedMedia("rome", album: trip)
+        try seedMedia("mum", album: family)
+        try seedMedia("loose")
+        try context.save()
+
+        let artifact = try await createBackupFromSeed()
+        let freshContext = ModelContext(try Self.makeContainer())
+        _ = try await restore(artifact, into: freshContext)
+
+        let albums = try freshContext.fetch(FetchDescriptor<VaultAlbum>())
+        XCTAssertEqual(albums.count, 2)
+        let restoredMedia = try freshContext.fetch(FetchDescriptor<VaultMedia>())
+        let membership = Dictionary(grouping: restoredMedia) { $0.album?.name ?? "none" }
+        XCTAssertEqual(Set(membership["Trip"]?.map(\.fileName) ?? []), ["paris.jpg", "rome.jpg"])
+        XCTAssertEqual(membership["Family"]?.map(\.fileName), ["mum.jpg"])
+        XCTAssertEqual(membership["none"]?.map(\.fileName), ["loose.jpg"])
+        // Album identities are reused rather than duplicated.
+        XCTAssertEqual(Set(albums.map(\.id)), [trip.id, family.id])
+    }
+
+    /// Favorite state is restored per item, not as a blanket flag.
+    @MainActor
+    func testFavoritesAreRestoredPerItem() async throws {
+        try seedMedia("loved", isFavorite: true)
+        try seedMedia("plain")
+        try seedMedia("loved-video", isVideo: true, isFavorite: true)
+        try context.save()
+        let artifact = try await createBackupFromSeed()
+
+        let freshContext = ModelContext(try Self.makeContainer())
+        _ = try await restore(artifact, into: freshContext)
+
+        let restored = try freshContext.fetch(FetchDescriptor<VaultMedia>())
+        XCTAssertEqual(Set(restored.filter(\.isFavorite).map(\.fileName)), ["loved.jpg", "loved-video.jpg"])
+        XCTAssertEqual(restored.filter { !$0.isFavorite }.map(\.fileName), ["plain.jpg"])
+    }
+
+    /// Special-day metadata (type, repeat flag, reminder offsets and times) survives.
+    @MainActor
+    func testSpecialDayDetailsAreRestored() async throws {
+        let event = SpecialDay(title: "Mum's Birthday", date: Date(timeIntervalSince1970: 1_234_567_890), type: .birthday)
+        event.notes = "Cake at 6"
+        event.repeatsYearly = true
+        event.reminderDays = [14, 3]
+        event.reminderTimeHour = 9
+        event.reminderTimeMinute = 30
+        context.insert(event)
+        try seedMedia("one")
+        try context.save()
+
+        let artifact = try await createBackupFromSeed()
+        let freshContext = ModelContext(try Self.makeContainer())
+        _ = try await restore(artifact, into: freshContext)
+
+        let days = try freshContext.fetch(FetchDescriptor<SpecialDay>())
+        let restored = try XCTUnwrap(days.first)
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(restored.id, event.id)
+        XCTAssertEqual(restored.title, "Mum's Birthday")
+        XCTAssertEqual(restored.typeRaw, SpecialDayType.birthday.rawValue)
+        XCTAssertEqual(restored.notes, "Cake at 6")
+        XCTAssertTrue(restored.repeatsYearly)
+        XCTAssertEqual(restored.reminderDays, [3, 14])
+        XCTAssertEqual(restored.reminderTimeHour, 9)
+        XCTAssertEqual(restored.reminderTimeMinute, 30)
+        XCTAssertEqual(restored.date, event.date)
     }
 }

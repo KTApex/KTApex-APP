@@ -7,13 +7,23 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var context
     @Query private var media: [VaultMedia]
     @Query private var albums: [VaultAlbum]
+    @Query private var events: [SpecialDay]
     @State private var showingPINSetup = false
     @State private var showingStorage = false
     @State private var showingDuplicates = false
     @State private var notifStatus: UNAuthorizationStatus = .notDetermined
     @State private var autoLock = AppSettingsStore.autoLockTimeout
+    @State private var notificationPrivacy = AppSettingsStore.notificationPrivacyMode
 
     private let lockOptions = [(0, "Immediately"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes")]
+
+    /// Options shown in the picker. "Never" is appended only when the device can still
+    /// be re-locked some other way, so it is never offered as a one-way door.
+    private var lockPickerOptions: [(Int, String)] {
+        AppSettingsStore.neverAutoLockAllowed
+            ? lockOptions + [(AppSettingsStore.neverLocks, "Never")]
+            : lockOptions
+    }
 
     private var stats: StorageService.Stats {
         StorageService.shared.stats(media: media, albums: albums)
@@ -37,17 +47,26 @@ struct SettingsView: View {
                         Button("Set up PIN") { showingPINSetup = true }
                     }
                     Picker("Auto-lock", selection: $autoLock) {
-                        ForEach(lockOptions, id: \.0) { Text($0.1).tag($0.0) }
+                        ForEach(lockPickerOptions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .onChange(of: autoLock) { _, v in AppSettingsStore.setAutoLock(v) }
                 } header: {
                     Text("Security")
                 } footer: {
-                    if !PINService.shared.isEnabled {
-                        Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
+                    // One footer for the whole section: SwiftUI allows a single footer,
+                    // and both hints can apply at once (e.g. Never selected with no PIN).
+                    VStack(alignment: .leading, spacing: 6) {
+                        if autoLock == AppSettingsStore.neverLocks {
+                            Text("MyVault will not lock itself when you switch away. It still locks when you tap Lock Now or relaunch the app. Turn on Face ID or set a PIN so you can lock the vault on demand.")
+                        } else if !AppSettingsStore.neverAutoLockAllowed {
+                            Text("Set up a PIN or turn on Face ID to unlock the “Never” option. Without one, the vault would have no way back to a locked state.")
+                        }
+                        if !PINService.shared.isEnabled {
+                            Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
+                        }
                     }
                 }
-                Section("Notifications") {
+                Section {
                     HStack {
                         Text("Permission")
                         Spacer()
@@ -59,6 +78,24 @@ struct SettingsView: View {
                         Button("Enable Notifications") {
                             Task { _ = await NotificationService.shared.requestAuthorization() }
                         }
+                    }
+                    Toggle("Hide details on Lock Screen", isOn: $notificationPrivacy)
+                        .accessibilityHint("Removes event names from reminder notifications.")
+                        .onChange(of: notificationPrivacy) { _, value in
+                            AppSettingsStore.setNotificationPrivacyMode(value)
+                            // Re-apply immediately so reminders already scheduled with an
+                            // event title stop exposing it.
+                            Task { await NotificationService.shared.rescheduleAll(events) }
+                        }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    // Built as two branches rather than a ternary: a long inline
+                    // conditional inside a ViewBuilder confuses type inference.
+                    if notificationPrivacy {
+                        Text("Reminders will say “You have a special day coming up” instead of naming the event, so a glance at your Lock Screen reveals nothing.")
+                    } else {
+                        Text("Reminders include the event name and appear on your Lock Screen.")
                     }
                 }
                 Section("Appearance") {
@@ -96,7 +133,17 @@ struct SettingsView: View {
             .sheet(isPresented: $showingPINSetup) { PINSetupView() }
             .sheet(isPresented: $showingStorage) { StorageView() }
             .sheet(isPresented: $showingDuplicates) { DuplicatesView() }
-            .task { notifStatus = await NotificationService.shared.authorizationStatus() }
+            .task {
+                notifStatus = await NotificationService.shared.authorizationStatus()
+                // If "Never" is stored but is no longer a safe choice — for example the
+                // PIN was disabled after it was selected — the picker would have no
+                // matching tag and would render blank. Repair the stored value so the
+                // setting always reflects something the UI can show and the app obeys.
+                if autoLock == AppSettingsStore.neverLocks, !AppSettingsStore.neverAutoLockAllowed {
+                    autoLock = 60
+                    AppSettingsStore.setAutoLock(60)
+                }
+            }
         }
     }
 

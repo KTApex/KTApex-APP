@@ -168,7 +168,7 @@ final class BackupArchiveTests: XCTestCase {
 
         expectFailure({
             _ = try BackupArchive.read(from: url, password: password, into: staged)
-        }, message: "a tampered salt must not authenticate")
+        }, "a tampered salt must not authenticate")
     }
 
     func testTruncatedBackupIsRejected() throws {
@@ -182,7 +182,7 @@ final class BackupArchiveTests: XCTestCase {
 
         expectFailure({
             _ = try BackupArchive.read(from: url, password: password, into: staged)
-        }, message: "a truncated backup must not decrypt")
+        }, "a truncated backup must not decrypt")
     }
 
     func testEmptyFileIsNotABackup() throws {
@@ -363,5 +363,109 @@ final class BackupArchiveTests: XCTestCase {
         XCTAssertFalse(fractions.isEmpty)
         XCTAssertEqual(fractions.last ?? 0, 1, accuracy: 0.0001)
         XCTAssertTrue(fractions.allSatisfy { $0 >= 0 && $0 <= 1 })
+    }
+
+    // MARK: - Part-level integrity
+
+    /// Every sealed part is bound to its (entry, part) position, so swapping two
+    /// entries' payloads in the file must not authenticate. Without that binding an
+    /// attacker could reorder media inside a valid backup.
+    func testSwappingTwoEntriesPayloadsIsDetected() throws {
+        let url = backupURL("Swapped.mvbackup")
+        let first = Data(repeating: 0xA1, count: 2048)
+        let second = Data(repeating: 0xB2, count: 2048)
+        try writeSample(to: url, extra: [
+            BackupEntry(name: "media-0", source: .data(first)),
+            BackupEntry(name: "media-1", source: .data(second))
+        ])
+
+        var bytes = try Data(contentsOf: url)
+        // Locate the second payload's ciphertext and move it in front of the first.
+        // Both payloads have the same length, so the sealed blocks are the same size
+        // and the swap keeps the container structurally plausible.
+        let blockLength = first.count + 12 + 16
+        let secondStart = bytes.count - blockLength
+        guard secondStart > BackupFormat.headerFixedLength else {
+            XCTFail("fixture layout unexpected")
+            return
+        }
+        let secondBlock = bytes.subdata(in: secondStart..<bytes.count)
+        let firstBlock = bytes.subdata(in: (secondStart - blockLength)..<secondStart)
+        bytes.replaceSubrange((secondStart - blockLength)..<bytes.count, with: secondBlock + firstBlock)
+        try bytes.write(to: url)
+
+        let staged = try stagedDirectory()
+        defer { SecureScratch.removeDirectory(staged) }
+        // Which of the two errors surfaces depends on where the tampering is first
+        // noticed (a length prefix that no longer matches, or an authentication tag
+        // that fails). Both are safe rejections; the point is that it cannot succeed.
+        do {
+            _ = try BackupArchive.read(from: url, password: password, into: staged)
+            XCTFail("reordered parts must not read as a valid backup")
+        } catch let error as BackupError {
+            XCTAssertTrue(
+                error == .wrongPasswordOrDamaged || error == .corrupted,
+                "expected a safe rejection, got \(error)"
+            )
+        }
+    }
+
+    // MARK: - Integrity of the container tail
+
+    func testTrailingBytesAfterTheLastEntryAreRejected() throws {
+        let url = backupURL()
+        try writeSample(to: url, extra: [BackupEntry(name: "media-0", source: .data(Data("payload".utf8)))])
+
+        // Appending garbage after a structurally valid container must not be
+        // silently ignored.
+        var bytes = try Data(contentsOf: url)
+        bytes.append(contentsOf: [0xDE, 0xAD, 0xBE, 0xEF])
+        try bytes.write(to: url)
+
+        let staged = try stagedDirectory()
+        defer { SecureScratch.removeDirectory(staged) }
+        expectFailure({
+            _ = try BackupArchive.read(from: url, password: password, into: staged)
+        }, equals: .corrupted, "bytes appended after the last entry must be rejected")
+    }
+
+    func testLimitedReadStillAllowsTrailingBytes() throws {
+        // A manifest-only read (used for previews and creation-time verification)
+        // stops after the first entry on purpose, so the tail check must not run.
+        let url = backupURL()
+        try writeSample(to: url, extra: [BackupEntry(name: "media-0", source: .data(Data("payload".utf8)))])
+
+        var bytes = try Data(contentsOf: url)
+        bytes.append(contentsOf: [0xDE, 0xAD])
+        try bytes.write(to: url)
+
+        let staged = try stagedDirectory()
+        defer { SecureScratch.removeDirectory(staged) }
+        let result = try BackupArchive.read(from: url, password: password, into: staged, entryLimit: 1)
+        XCTAssertEqual(Set(result.stagedFiles.keys), [BackupFormat.manifestEntryName])
+    }
+
+    // MARK: - Compression
+
+    func testDecompressionIsCappedDuringExpansion() throws {
+        // Zlib's worst-case ratio is roughly 1000:1, so a few megabytes of zeros
+        // are a bomb that the cap must refuse *while inflating*, not after.
+        let bomb = Data(repeating: 0, count: 4 * 1024 * 1024)
+        guard let compressed = BackupCompression.compress(bomb) else {
+            XCTFail("compression failed")
+            return
+        }
+        XCTAssertLessThan(compressed.count, bomb.count)
+        expectFailure({
+            _ = try BackupCompression.decompress(compressed, limit: 1024 * 1024)
+        }, equals: .corrupted, "expansion past the limit must be refused")
+
+        // Under the cap, expansion still round-trips exactly.
+        let small = Data(repeating: 7, count: 64 * 1024)
+        guard let packed = BackupCompression.compress(small) else {
+            XCTFail("compression failed")
+            return
+        }
+        XCTAssertEqual(try BackupCompression.decompress(packed, limit: 1024 * 1024), small)
     }
 }

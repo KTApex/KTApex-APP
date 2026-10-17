@@ -57,8 +57,10 @@ struct AlbumDetailView: View {
         .navigationTitle(album.name)
         .navigationBarTitleDisplayMode(.large)
         .toolbar { toolbarContent }
-        .sheet(isPresented: viewerBinding) {
-            MediaViewerView(items: items, selectedID: viewerItem?.id)
+        // A full-screen viewer, matching the vault: a sheet would let the album
+        // grid show around the media and would not own the screen.
+        .fullScreenCover(item: $viewerItem) { item in
+            MediaViewerView(items: items, selectedID: item.id)
         }
         .vaultShareSheet(prepared: $shareBundle)
         .alert("Album", isPresented: alertBinding) {
@@ -128,10 +130,6 @@ struct AlbumDetailView: View {
         .disabled(selection.isEmpty)
         .opacity(selection.isEmpty ? 0.4 : 1)
         .accessibilityLabel(title)
-    }
-
-    private var viewerBinding: Binding<Bool> {
-        Binding(get: { viewerItem != nil }, set: { if !$0 { viewerItem = nil } })
     }
 
     private var alertBinding: Binding<Bool> {

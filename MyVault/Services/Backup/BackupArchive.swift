@@ -1,14 +1,19 @@
 import Foundation
 import CryptoKit
+import Compression
 
 /// Something to write into a backup.
 struct BackupEntry {
     enum Source {
         /// Small payload already in memory (the manifest).
         case data(Data)
-        /// Large payload streamed from disk, never loaded whole (vault ciphertext
-        /// of a video).
+        /// Payload read from a file already in plaintext, streamed so a large video
+        /// is never loaded whole.
         case file(URL, byteCount: Int)
+        /// A vault item identified by its `.mvenc` name. The archive decrypts it with
+        /// the device vault key while writing, so the backup holds portable plaintext
+        /// rather than ciphertext that only this device can open.
+        case plaintextInVault(fileName: String)
     }
 
     var name: String
@@ -16,6 +21,9 @@ struct BackupEntry {
     /// Only ever true for small entries: media is already compressed, so spending
     /// CPU on it would make backup creation slower for no gain.
     var compress: Bool = false
+    /// Declared uncompressed size, used only to report progress before the payload
+    /// has been read. Ignored for `.data`, whose size is known.
+    var byteCountHint: Int = 0
 }
 
 /// Streaming reader/writer for the `.mvbackup` container.
@@ -110,6 +118,7 @@ enum BackupArchive {
         switch entry.source {
         case .data(let data): return data.count
         case .file(_, let byteCount): return byteCount
+        case .plaintextInVault: return max(entry.byteCountHint, 1)
         }
     }
 
@@ -150,6 +159,19 @@ enum BackupArchive {
             payloadFile = url
             uncompressedLength = byteCount
             payloadLength = byteCount
+        case .plaintextInVault(let fileName):
+            // Decrypt with the device vault key so the backup itself holds portable
+            // bytes. This is the one place a whole item exists in memory during a
+            // backup; the vault import path already bounds items at
+            // `VaultImportService.maxItemBytes`, and the alternative — storing
+            // device-only ciphertext — makes the backup unrestorable and unverifiable.
+            guard let plaintext = try? VaultStorageService.shared.loadDecrypted(fileName: fileName),
+                  !plaintext.isEmpty else {
+                throw BackupError.failedToWrite
+            }
+            payloadData = plaintext
+            uncompressedLength = plaintext.count
+            payloadLength = plaintext.count
         }
 
         let partCount = partCount(forPayloadLength: payloadLength)
@@ -335,7 +357,13 @@ enum BackupArchive {
                 throw error
             }
 
-            guard UInt64(entryBytes) == uncompressedLength else { throw BackupError.corrupted }
+            // Uncompressed entries carry their payload verbatim, so the staged
+            // size must equal the recorded size. Compressed entries hold the
+            // *compressed* size here; their true size is validated against
+            // `uncompressedLength` after decompression below.
+            if flags & 1 == 0 {
+                guard UInt64(entryBytes) == uncompressedLength else { throw BackupError.corrupted }
+            }
             totalPayload += entryBytes
             guard totalPayload <= BackupFormat.Limits.maximumTotalBytes else { throw BackupError.corrupted }
 
@@ -351,6 +379,14 @@ enum BackupArchive {
 
             staged[name] = stagedURL
             progress?(min(Double(totalPayload) / Double(totalFileSize), 1))
+        }
+
+        if entryLimit == nil {
+            // The container ends exactly after the last entry: anything more
+            // means the file was appended to or tampered with. Limited reads
+            // stop early on purpose, so only a full read enforces this.
+            let trailing = try handle.read(upToCount: 1) ?? Data()
+            guard trailing.isEmpty else { throw BackupError.corrupted }
         }
 
         return ReadResult(header: header, stagedFiles: staged, totalPayloadBytes: totalPayload)
@@ -381,17 +417,67 @@ enum BackupCompression {
     }
 
     /// Decompresses with a hard ceiling on the result, so a small crafted entry
-    /// cannot expand into hundreds of megabytes.
+    /// cannot expand into hundreds of megabytes. Inflation is streamed: output
+    /// is produced in 64 KiB chunks and the operation is aborted the moment the
+    /// running total passes the cap, so even a ~1000:1 zlib bomb never gets to
+    /// allocate more than the limit plus one chunk.
+    ///
+    /// `compression_stream_end` is a C macro in `<compression.h>` and is not
+    /// visible to Swift; `compression_stream_init`/`compression_stream_destroy`
+    /// are. The struct itself has no zero-argument initialiser, so it is created
+    /// with every pointer/size field cleared before being initialised.
     static func decompress(_ data: Data, limit: Int) throws -> Data {
-        guard data.count <= limit else { throw BackupError.corrupted }
-        do {
-            let expanded = try (data as NSData).decompressed(using: .zlib) as Data
-            guard expanded.count <= limit else { throw BackupError.corrupted }
-            return expanded
-        } catch let error as BackupError {
-            throw error
-        } catch {
+        guard !data.isEmpty, data.count <= limit else { throw BackupError.corrupted }
+
+        // `compression_stream` has no zero-argument initialiser and its pointer
+        // fields are non-optional, so the struct is allocated and initialised with
+        // cleared fields before `compression_stream_init` fills in `state`.
+        let streamPointer = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        streamPointer.initialize(to: compression_stream(
+            dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
+            dst_size: 0,
+            src_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
+            src_size: 0,
+            state: nil
+        ))
+        defer {
+            streamPointer.deinitialize(count: 1)
+            streamPointer.deallocate()
+        }
+        guard compression_stream_init(streamPointer, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw BackupError.corrupted
         }
+        // `compression_stream_destroy` is the Swift-visible teardown; the C macro
+        // `compression_stream_end` is not importable.
+        defer { compression_stream_destroy(streamPointer) }
+        let stream = streamPointer
+
+        var output = Data()
+        output.reserveCapacity(min(data.count * 4, limit))
+        var status = COMPRESSION_STATUS_OK
+        var exceeded = false
+        data.withUnsafeBytes { rawBuffer in
+            stream.pointee.src_ptr = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            stream.pointee.src_size = data.count
+            let chunk = UnsafeMutablePointer<UInt8>.allocate(capacity: 64 * 1024)
+            defer { chunk.deallocate() }
+            repeat {
+                stream.pointee.dst_ptr = chunk
+                stream.pointee.dst_size = 64 * 1024
+                status = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                output.append(chunk, count: 64 * 1024 - stream.pointee.dst_size)
+                if output.count > limit {
+                    // Stop expanding the moment the cap is passed; the guard below
+                    // rejects the result. Never let a bomb allocate past the limit.
+                    exceeded = true
+                    break
+                }
+            } while status == COMPRESSION_STATUS_OK
+        }
+        // The only acceptable end state is a clean finish at or under the cap.
+        guard !exceeded, status == COMPRESSION_STATUS_END, output.count <= limit else {
+            throw BackupError.corrupted
+        }
+        return output
     }
 }
