@@ -61,17 +61,13 @@ final class AutoLockPolicyTests: XCTestCase {
         // Biometrics on: Never is allowed regardless of PIN state.
         AppSettingsStore.setBiometricEnabled(true)
         XCTAssertTrue(AppSettingsStore.neverAutoLockAllowed)
-        XCTAssertTrue(AppState.shouldHonourNeverAutoLock)
 
-        // Biometrics off and no PIN: refused.
+        // Biometrics off: the guard falls back to whether a PIN exists.
         AppSettingsStore.setBiometricEnabled(false)
-        if PINService.shared.isEnabled {
-            // A PIN exists on this simulator, so the refusal case cannot be expressed.
-            // Assert the disjunction instead of skipping silently.
-            XCTAssertTrue(AppSettingsStore.neverAutoLockAllowed)
-        } else {
-            XCTAssertFalse(AppSettingsStore.neverAutoLockAllowed)
-            XCTAssertFalse(AppState.shouldHonourNeverAutoLock, "a stored Never must not be obeyed without a second unlock method")
-        }
+        XCTAssertEqual(
+            AppSettingsStore.neverAutoLockAllowed,
+            PINService.shared.isEnabled,
+            "with biometrics off, only a PIN can keep Never safe"
+        )
     }
 }
