@@ -49,7 +49,7 @@ struct SettingsView: View {
                         Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
                     }
                 }
-                Section("Notifications") {
+                Section {
                     HStack {
                         Text("Permission")
                         Spacer()
@@ -70,10 +70,16 @@ struct SettingsView: View {
                             // event title stop exposing it.
                             Task { await NotificationService.shared.rescheduleAll(events) }
                         }
+                } header: {
+                    Text("Notifications")
                 } footer: {
-                    Text(notificationPrivacy
-                         ? "Reminders will say “You have a special day coming up” instead of naming the event, so a glance at your Lock Screen reveals nothing."
-                         : "Reminders include the event name and appear on your Lock Screen.")
+                    // Built as two branches rather than a ternary: a long inline
+                    // conditional inside a ViewBuilder confuses type inference.
+                    if notificationPrivacy {
+                        Text("Reminders will say “You have a special day coming up” instead of naming the event, so a glance at your Lock Screen reveals nothing.")
+                    } else {
+                        Text("Reminders include the event name and appear on your Lock Screen.")
+                    }
                 }
                 Section("Appearance") {
                     Picker("Theme", selection: $themeManager.mode) {
