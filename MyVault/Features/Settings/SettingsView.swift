@@ -53,14 +53,17 @@ struct SettingsView: View {
                 } header: {
                     Text("Security")
                 } footer: {
-                    if autoLock == AppSettingsStore.neverLocks {
-                        Text("MyVault will not lock itself when you switch away. It still locks when you tap Lock Now or relaunch the app. Turn on Face ID or set a PIN so you can lock the vault on demand.")
-                    } else if !AppSettingsStore.neverAutoLockAllowed {
-                        Text("Set up a PIN or turn on Face ID to unlock the “Never” option. Without one, the vault would have no way back to a locked state.")
-                    }
-                } footer: {
-                    if !PINService.shared.isEnabled {
-                        Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
+                    // One footer for the whole section: SwiftUI allows a single footer,
+                    // and both hints can apply at once (e.g. Never selected with no PIN).
+                    VStack(alignment: .leading, spacing: 6) {
+                        if autoLock == AppSettingsStore.neverLocks {
+                            Text("MyVault will not lock itself when you switch away. It still locks when you tap Lock Now or relaunch the app. Turn on Face ID or set a PIN so you can lock the vault on demand.")
+                        } else if !AppSettingsStore.neverAutoLockAllowed {
+                            Text("Set up a PIN or turn on Face ID to unlock the “Never” option. Without one, the vault would have no way back to a locked state.")
+                        }
+                        if !PINService.shared.isEnabled {
+                            Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
+                        }
                     }
                 }
                 Section {
