@@ -65,14 +65,27 @@ enum CountdownEngine {
         return calendar.date(from: comps)
     }
 
-    static func notificationTitle(for event: SpecialDay, daysBefore: Int) -> String {
+    static func notificationTitle(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = false) -> String {
+        // A neutral title is used in privacy mode: the event type alone ("Birthday
+        // Reminder") already hints at a date worth knowing, so the generic wording is
+        // used for every type.
+        if privacyMode { return "MyVault" }
         switch event.type {
         case .birthday: return "Birthday Reminder"
         default: return "Special Day"
         }
     }
 
-    static func notificationBody(for event: SpecialDay, daysBefore: Int) -> String {
+    static func notificationBody(for event: SpecialDay, daysBefore: Int, privacyMode: Bool = false) -> String {
+        // Privacy mode: no title, no type, no date — just a nudge to open the app. The
+        // tap still deep-links because the identifier travels in `userInfo`.
+        if privacyMode {
+            switch daysBefore {
+            case 0: return "You have a special day today."
+            case 1: return "You have a special day tomorrow."
+            default: return "You have a special day coming up."
+            }
+        }
         if daysBefore == 0 { return "\(event.title) is today." }
         if daysBefore == 1 { return "\(event.title) is tomorrow." }
         return "\(event.title) is in \(daysBefore) days."

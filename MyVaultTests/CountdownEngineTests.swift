@@ -66,4 +66,53 @@ final class CountdownEngineTests: XCTestCase {
         XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("today"))
         XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 1).contains("tomorrow"))
     }
+
+    // MARK: - Notification privacy mode
+
+    /// The security property: with privacy mode on, nothing in the banner identifies
+    /// the event. A Lock Screen banner is readable without unlocking the phone, so a
+    /// title here would leak vault contents to anyone glancing at the device.
+    func testPrivacyModeNeverRevealsTheEventTitle() {
+        let e = event(date: Date())
+        e.title = "Mum's Birthday"
+
+        for days in [0, 1, 3, 7] {
+            let title = CountdownEngine.notificationTitle(for: e, daysBefore: days, privacyMode: true)
+            let body = CountdownEngine.notificationBody(for: e, daysBefore: days, privacyMode: true)
+            XCTAssertFalse(title.localizedCaseInsensitiveContains("Mum"), "title leaked for daysBefore \(days): \(title)")
+            XCTAssertFalse(body.localizedCaseInsensitiveContains("Mum"), "body leaked for daysBefore \(days): \(body)")
+            XCTAssertFalse(body.localizedCaseInsensitiveContains("Birthday"), "body leaked the type for daysBefore \(days): \(body)")
+            XCTAssertEqual(title, "MyVault")
+            XCTAssertTrue(body.hasPrefix("You have a special day"))
+        }
+    }
+
+    /// Privacy mode must not remove the information the user needs to act: the wording
+    /// still distinguishes today from tomorrow from later.
+    func testPrivacyModeStillDistinguishesTiming() {
+        let e = event(date: Date())
+        e.title = "Private"
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: true), "You have a special day today.")
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 1, privacyMode: true), "You have a special day tomorrow.")
+        XCTAssertEqual(CountdownEngine.notificationBody(for: e, daysBefore: 5, privacyMode: true), "You have a special day coming up.")
+    }
+
+    /// With privacy mode off the feature is unchanged, so this is a toggle and not a
+    /// silent removal of detail.
+    func testPrivacyModeOffKeepsTheTitle() {
+        let e = event(date: Date())
+        e.title = "Anniversary"
+        XCTAssertTrue(CountdownEngine.notificationBody(for: e, daysBefore: 0, privacyMode: false).contains("Anniversary"))
+        XCTAssertEqual(CountdownEngine.notificationTitle(for: e, daysBefore: 0, privacyMode: false), "Special Day")
+    }
+
+    /// The default must be the private one: forgetting to set the preference should
+    /// never expose a title.
+    func testPrivacyModeDefaultsToOn() {
+        XCTAssertTrue(AppSettingsStore.notificationPrivacyMode, "privacy mode must default to on")
+
+        let e = event(date: Date())
+        e.title = "Anniversary"
+        XCTAssertFalse(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("Anniversary"))
+    }
 }

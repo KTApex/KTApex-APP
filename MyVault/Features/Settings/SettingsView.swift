@@ -7,11 +7,13 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var context
     @Query private var media: [VaultMedia]
     @Query private var albums: [VaultAlbum]
+    @Query private var events: [SpecialDay]
     @State private var showingPINSetup = false
     @State private var showingStorage = false
     @State private var showingDuplicates = false
     @State private var notifStatus: UNAuthorizationStatus = .notDetermined
     @State private var autoLock = AppSettingsStore.autoLockTimeout
+    @State private var notificationPrivacy = AppSettingsStore.notificationPrivacyMode
 
     private let lockOptions = [(0, "Immediately"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes")]
 
@@ -60,6 +62,18 @@ struct SettingsView: View {
                             Task { _ = await NotificationService.shared.requestAuthorization() }
                         }
                     }
+                    Toggle("Hide details on Lock Screen", isOn: $notificationPrivacy)
+                        .accessibilityHint("Removes event names from reminder notifications.")
+                        .onChange(of: notificationPrivacy) { _, value in
+                            AppSettingsStore.setNotificationPrivacyMode(value)
+                            // Re-apply immediately so reminders already scheduled with an
+                            // event title stop exposing it.
+                            Task { await NotificationService.shared.rescheduleAll(events) }
+                        }
+                } footer: {
+                    Text(notificationPrivacy
+                         ? "Reminders will say “You have a special day coming up” instead of naming the event, so a glance at your Lock Screen reveals nothing."
+                         : "Reminders include the event name and appear on your Lock Screen.")
                 }
                 Section("Appearance") {
                     Picker("Theme", selection: $themeManager.mode) {
