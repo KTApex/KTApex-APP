@@ -134,11 +134,15 @@ struct VaultView: View {
     private var chrome: some View {
         navigationStack
             .navigationTitle("Vault")
+            .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $showingTrash) { TrashView() }
             .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
             .searchable(text: $searchText, prompt: "Search photos, videos, albums, dates")
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .top, spacing: 0) { topBanner }
+            // The selection bar is the *only* thing this screen docks above the tab
+            // bar, and only while selecting. It renders nothing otherwise, so it
+            // contributes no height and cannot create a gap.
             .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
             // Stable handle for UI tests: present regardless of whether the vault
             // has content, and independent of how a TabView reports its navigation bar.
@@ -160,7 +164,15 @@ struct VaultView: View {
     @ViewBuilder
     private var grid: some View {
         if visibleMedia.isEmpty {
-            emptyState
+            // The empty state fills the viewport: a short centred block would leave
+            // the same dead gap the gallery itself used to leave.
+            ScrollView(.vertical) {
+                emptyState
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 64)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(MVColor.galleryBackground)
         } else {
             GalleryGrid(
                 sections: sections,

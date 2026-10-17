@@ -6,6 +6,11 @@ import UIKit
 /// Only the visible cells run a load task (that is what `LazyVGrid` buys), the
 /// decode happens off the main actor inside `ThumbnailCache`, and every cell shows
 /// a placeholder of the same size so scrolling never re-layouts.
+///
+/// Layout contract: this view is the *whole* scrollable region. It fills the space it
+/// is given, its content grows with the number of sections, and it never reserves
+/// trailing space for navigation — the tab bar lives outside it (see `VaultView`), so
+/// SwiftUI's own safe-area handling keeps the last row clear.
 struct GalleryGrid: View {
     let sections: [GallerySection]
     let columnCount: Int
@@ -14,22 +19,31 @@ struct GalleryGrid: View {
     let onOpen: (VaultMedia) -> Void
     let onToggleSelection: (VaultMedia) -> Void
 
+    /// Spacing between tiles. Kept tight and uniform so the grid reads as one
+    /// continuous surface rather than a set of separated cards.
+    private static let spacing: CGFloat = 2
+    /// Vertical gap between one date section and the next. Larger than the tile
+    /// spacing so grouping is legible without separators.
+    private static let sectionSpacing: CGFloat = 10
+
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: Self.spacing), count: max(2, min(columnCount, 5)))
+        Array(
+            repeating: GridItem(.flexible(), spacing: Self.spacing, alignment: .top),
+            count: max(2, min(columnCount, 5))
+        )
     }
 
-    private static let spacing: CGFloat = 3
-
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: Self.spacing, pinnedViews: [.sectionHeaders]) {
+        ScrollView(.vertical) {
+            LazyVGrid(
+                columns: columns,
+                alignment: .center,
+                spacing: Self.spacing,
+                pinnedViews: [.sectionHeaders]
+            ) {
                 ForEach(sections) { section in
                     Section {
                         ForEach(section.items) { item in
-                            // The cell already fills its grid slot and its thumbnail
-                            // uses `scaledToFill`; adding `.aspectRatio(1, .fill)`
-                            // here double-constrained the layout, which is what
-                            // produced stretched tiles and uneven gaps.
                             GalleryThumbCell(
                                 item: item,
                                 isSelecting: isSelecting,
@@ -49,12 +63,19 @@ struct GalleryGrid: View {
                     }
                 }
             }
-            // Keeps the final row clear of the tab bar even before the tab bar's
-            // own inset is accounted for, and gives the grid breathing room at the
-            // end of the scroll rather than butting against the screen edge.
-            .padding(.bottom, 12)
+            // Trailing room at the end of the scroll only. Group separation is done by
+            // the header's own top padding, so no per-section footer is needed — a
+            // section footer in `LazyVGrid` occupies a full grid row and would have
+            // doubled the gap and pushed the last row away from the tab bar.
+            .padding(.bottom, Self.sectionSpacing)
         }
+        // Fills the viewport even when there are only one or two photos, so the grid
+        // starts at the top instead of floating in the middle of the screen. The
+        // content itself is never stretched: only the scroll container is.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(MVColor.galleryBackground)
+        // Lets the content scroll *under* the tab bar briefly while still leaving the
+        // final row reachable, which is how a native photo grid behaves.
         .scrollDismissesKeyboard(.immediately)
     }
 }
@@ -63,24 +84,24 @@ struct GallerySectionHeader: View {
     let section: GallerySection
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(section.title)
-                    .font(MVFont.headline)
-                if let subtitle = section.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(section.title)
+                .font(.subheadline.weight(.semibold))
+            if let subtitle = section.subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Divider()
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         // Pinned headers sit on top of moving thumbnails, so the background must be
         // fully opaque: a translucent material lets the grid show through the title.
+        // No divider: a native photo gallery groups by type scale and whitespace, and
+        // a rule across the width makes the header read as a separate bar.
         .background(MVColor.galleryBackground)
         .accessibilityElement(children: .combine)
     }
