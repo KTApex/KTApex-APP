@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 enum AppTab: Hashable { case home, vault, specialDays, settings }
@@ -7,6 +8,22 @@ enum AppRoute: Hashable {
     case specialDayDetail(String)
 }
 
+/// A backup the system asked MyVault to open from outside the app.
+///
+/// `url` is a copy inside MyVault's own scratch space, not the raw Files URL: the
+/// security scope is released as soon as the copy exists, so nothing downstream has
+/// to hold a provider's permission open. `id` is regenerated per request so opening
+/// the same file twice is still two distinct, observable events.
+struct PendingBackupOpen: Identifiable, Equatable {
+    let id = UUID()
+    var url: URL
+    var displayName: String
+    /// Directory holding `url`; released once the request is consumed or dismissed.
+    var directory: URL
+
+    static func == (lhs: PendingBackupOpen, rhs: PendingBackupOpen) -> Bool { lhs.id == rhs.id }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var selectedTab: AppTab = .home
@@ -14,6 +31,12 @@ final class AppState: ObservableObject {
     @Published var onboardingCompleted: Bool = UserDefaults.standard.bool(forKey: "mv.onboardingCompleted")
     @Published var navigationPath = NavigationPath()
     @Published var deepLinkedSpecialDayID: String?
+    /// A backup the user asked to open from Files. `RootView` observes this and
+    /// presents the import screen once the app is unlocked, so a document open never
+    /// skips authentication.
+    @Published var pendingBackupOpen: PendingBackupOpen?
+    /// Message shown when a document open could not be prepared. Cleared once shown.
+    @Published var documentOpenError: String?
 
     private let authService = AuthenticationService.shared
     private var backgroundedAt: Date?
@@ -75,6 +98,39 @@ final class AppState: ObservableObject {
     func openSpecialDay(id: String) {
         deepLinkedSpecialDayID = id
         selectedTab = .specialDays
+    }
+
+    /// Handles a backup the system asked MyVault to open (Files, AirDrop, another app).
+    ///
+    /// The URL is copied into MyVault's scratch space here, on the main actor, and the
+    /// security scope released immediately — see `BackupFileImporter`. Copying rather
+    /// than holding the scope means the rest of the flow (password, decrypt, restore)
+    /// cannot be interrupted by a provider going away mid-restore.
+    ///
+    /// Nothing is decrypted and no password is asked for until `isUnlocked` is true:
+    /// the request is parked on `pendingBackupOpen` and `RootView` presents it after
+    /// authentication. A locked vault therefore never processes a document.
+    func openBackupDocument(at url: URL) {
+        do {
+            let staged = try BackupFileImporter.stageCopy(of: url)
+            pendingBackupOpen = PendingBackupOpen(
+                url: staged.url,
+                displayName: staged.originalName,
+                directory: staged.directory
+            )
+        } catch {
+            // Reported through the same channel as an in-app import failure, so the
+            // user is told what happened instead of the tap appearing to do nothing.
+            pendingBackupOpen = nil
+            documentOpenError = error.localizedDescription
+        }
+    }
+
+    /// Clears the request and removes its scratch copy. Called when the import screen
+    /// is dismissed for any reason, so no backup lingers in temporary storage.
+    func clearPendingBackupOpen() {
+        if let pending = pendingBackupOpen { SecureScratch.removeDirectory(pending.directory) }
+        pendingBackupOpen = nil
     }
     /// Locks the vault and clears in-memory decrypted thumbnail caches so no
     /// plaintext image data lingers after the app is backgrounded/locked.

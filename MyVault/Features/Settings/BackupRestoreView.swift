@@ -89,6 +89,23 @@ struct BackupRestoreView: View {
     @State private var cancelFlag = CancelFlag()
     @State private var isWorking = false
 
+    /// A backup handed in from outside the app (Files, AirDrop, another app).
+    ///
+    /// Kept as a separate stored value rather than being applied in `init`, because
+    /// validation has to run after the view exists so it can drive `alertMessage` and
+    /// `activeSheet`. `onAppear` routes it into the same pipeline the in-app picker
+    /// uses — `PortableBackupService.inspect` for the header, then the password sheet
+    /// and the existing restore. No second restore implementation exists.
+    private var externalOpen: PendingBackupOpen?
+
+    init() {
+        externalOpen = nil
+    }
+
+    init(openingExternal pending: PendingBackupOpen) {
+        externalOpen = pending
+    }
+
     /// Split into layers on purpose: keeping the list, the sheets and the alerts in
     /// one expression makes the type checker give up on it ("unable to type-check
     /// this expression in reasonable time").
@@ -129,6 +146,31 @@ struct BackupRestoreView: View {
             }
             .vaultShareSheet(prepared: $shareBundle)
             .onDisappear { discardIncomingCopy() }
+            // A backup opened from outside the app is routed into the existing
+            // pipeline here rather than in `init`, so it can drive the password sheet
+            // and the alert the same way the in-app picker does.
+            .onAppear { acceptExternalOpenIfNeeded() }
+    }
+
+    /// Validates an externally-opened backup and moves straight to the password step.
+    ///
+    /// The file was already copied into scratch space by `AppState.openBackupDocument`,
+    /// so the security scope is long released and nothing here touches an external URL.
+    /// `inspect` is the same header check the in-app flow uses, which means an
+    /// unsupported format is reported as "update the app" rather than "damaged file".
+    private func acceptExternalOpenIfNeeded() {
+        guard let pending = externalOpen, selectedBackupURL == nil else { return }
+        do {
+            let header = try PortableBackupService.inspect(pending.url)
+            selectedBackupURL = pending.url
+            selectedBackupName = pending.displayName
+            inspectedVersion = Int(header.formatVersion)
+            restorePassword = ""
+            activeSheet = .restorePassword
+        } catch {
+            Haptics.error()
+            alertMessage = error.localizedDescription
+        }
     }
 
     private var list: some View {

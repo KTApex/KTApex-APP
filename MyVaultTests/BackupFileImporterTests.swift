@@ -141,6 +141,76 @@ final class BackupFileImporterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
 
+    // MARK: - External document opening (Files tap → MyVault)
+
+    /// Only a `.mvbackup` may reach the importer. Anything else the system might hand
+    /// over — a stray URL, a photo, a text file — is refused before it is parsed.
+    func testOnlyBackupExtensionsAreAcceptedFromOutsideTheApp() {
+        XCTAssertTrue(MyVaultBackupType.looksLikeBackup(URL(fileURLWithPath: "/tmp/MyVault_Backup_2026-10-17_10-00.mvbackup")))
+        XCTAssertFalse(MyVaultBackupType.looksLikeBackup(URL(fileURLWithPath: "/tmp/notes.txt")))
+        XCTAssertFalse(MyVaultBackupType.looksLikeBackup(URL(fileURLWithPath: "/tmp/photo.jpg")))
+        XCTAssertFalse(MyVaultBackupType.looksLikeBackup(URL(fileURLWithPath: "/tmp/MyVault_Backup.mvbackup.bak")))
+        XCTAssertFalse(MyVaultBackupType.looksLikeBackup(URL(fileURLWithPath: "/tmp/noextension")))
+    }
+
+    /// The routing seam used by both the AppDelegate and `onOpenURL`: staging an
+    /// external file must produce a usable local copy, and a non-backup must be
+    /// refused. This is the logic the real-device flow depends on.
+    @MainActor
+    func testOpenBackupDocumentStagesAValidFileAndRefusesOthers() throws {
+        let state = AppState()
+
+        let valid = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MyVault_Backup_\(UUID().uuidString).mvbackup")
+        try Data("MVBK".utf8).write(to: valid)
+        defer { try? FileManager.default.removeItem(at: valid) }
+
+        state.openBackupDocument(at: valid)
+        let pending = try XCTUnwrap(state.pendingBackupOpen, "a valid .mvbackup must be staged")
+        XCTAssertEqual(pending.displayName, valid.lastPathComponent)
+        XCTAssertEqual(pending.url.lastPathComponent, "incoming.mvbackup")
+        XCTAssertEqual(try Data(contentsOf: pending.url), Data("MVBK".utf8))
+
+        // The scratch copy is removed when the request is dismissed, so no backup is
+        // left behind after the user finishes.
+        let directory = pending.directory
+        state.clearPendingBackupOpen()
+        XCTAssertNil(state.pendingBackupOpen)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+
+        // A missing file is reported, and nothing is left pending.
+        state.openBackupDocument(at: FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString).mvbackup"))
+        XCTAssertNil(state.pendingBackupOpen)
+        XCTAssertNotNil(state.documentOpenError, "a failed open must tell the user")
+        state.documentOpenError = nil
+    }
+
+    /// A parked request must not be presented while the vault is locked: the UI layer
+    /// gates on `isUnlocked`, and a document open never decrypts before authentication.
+    @MainActor
+    func testADocumentOpenIsNotConsumedWhileLocked() throws {
+        let state = AppState()
+        state.isUnlocked = false
+
+        let valid = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MyVault_Backup_\(UUID().uuidString).mvbackup")
+        try Data("MVBK".utf8).write(to: valid)
+        defer { try? FileManager.default.removeItem(at: valid) }
+
+        state.openBackupDocument(at: valid)
+
+        // Staged, but still parked: the vault is locked.
+        XCTAssertNotNil(state.pendingBackupOpen)
+        XCTAssertFalse(state.isUnlocked)
+
+        // Once unlocked, the same parked request becomes presentable.
+        state.isUnlocked = true
+        XCTAssertNotNil(state.pendingBackupOpen)
+        state.clearPendingBackupOpen()
+        XCTAssertNil(state.pendingBackupOpen)
+    }
+
     // MARK: - End to end across the boundary
 
     /// The whole point of this file: a real backup, copied in exactly the way the

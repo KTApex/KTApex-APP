@@ -49,6 +49,21 @@ struct MyVaultApp: App {
                 .tint(themeManager.accentColorValue)
                 .onAppear { configure() }
                 .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
+                // A file opened while the app is running (foreground or background) is
+                // delivered here. This is the modern SwiftUI entry point and coexists
+                // with the AppDelegate method: whichever the system uses, both end up
+                // at `appState.openBackupDocument(at:)`.
+                .onOpenURL { url in
+                    guard MyVaultBackupType.looksLikeBackup(url) else { return }
+                    appState.openBackupDocument(at: url)
+                }
+                // The AppDelegate method is still required, because when the app is not
+                // running iOS delivers the URL before SwiftUI exists. It posts through
+                // NotificationCenter; this picks that up once the scene is alive.
+                .onReceive(NotificationCenter.default.publisher(for: .didOpenBackupDocument)) { note in
+                    guard let url = note.object as? URL else { return }
+                    appState.openBackupDocument(at: url)
+                }
         }
         .modelContainer(sharedModelContainer)
     }
@@ -62,6 +77,12 @@ struct MyVaultApp: App {
         Task { @MainActor in
             let events = (try? sharedModelContainer.mainContext.fetch(FetchDescriptor<SpecialDay>())) ?? []
             WidgetSummaryService.refresh(events: events)
+        }
+        // A cold launch caused by opening a .mvbackup: the URL was captured by
+        // `AppDelegate` before this scene existed, so it is collected exactly once
+        // here. The import screen is only presented after the vault is unlocked.
+        if let url = appDelegate.takePendingLaunchURL() {
+            appState.openBackupDocument(at: url)
         }
     }
 
