@@ -108,11 +108,38 @@ final class CountdownEngineTests: XCTestCase {
 
     /// The default must be the private one: forgetting to set the preference should
     /// never expose a title.
+    ///
+    /// The default is the *absence* of the key, so the key is cleared first. Without
+    /// this the test would pass or fail depending on what other tests or a previous run
+    /// left in UserDefaults, which is not a property of the code at all.
     func testPrivacyModeDefaultsToOn() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "mv.notifPrivacy")
+        defaults.removeObject(forKey: "mv.notifPrivacy")
+        defer {
+            if let previous { defaults.set(previous, forKey: "mv.notifPrivacy") }
+            else { defaults.removeObject(forKey: "mv.notifPrivacy") }
+        }
+
         XCTAssertTrue(AppSettingsStore.notificationPrivacyMode, "privacy mode must default to on")
 
         let e = event(date: Date())
         e.title = "Anniversary"
         XCTAssertFalse(CountdownEngine.notificationBody(for: e, daysBefore: 0).contains("Anniversary"))
+    }
+
+    /// The stored preference round-trips, so the toggle actually persists.
+    func testPrivacyModePreferencePersists() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "mv.notifPrivacy")
+        defer {
+            if let previous { defaults.set(previous, forKey: "mv.notifPrivacy") }
+            else { defaults.removeObject(forKey: "mv.notifPrivacy") }
+        }
+
+        AppSettingsStore.setNotificationPrivacyMode(false)
+        XCTAssertFalse(AppSettingsStore.notificationPrivacyMode)
+        AppSettingsStore.setNotificationPrivacyMode(true)
+        XCTAssertTrue(AppSettingsStore.notificationPrivacyMode)
     }
 }
