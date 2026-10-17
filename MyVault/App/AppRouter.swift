@@ -75,10 +75,36 @@ final class AppState: ObservableObject {
             }
             return
         }
+
+        // "Never" is honoured only while it is still a safe choice. If the user removed
+        // both biometrics and the PIN — for example by disabling the PIN later — a
+        // stored "Never" would leave the vault reachable with no way back to a locked
+        // state, so it falls back to a one-minute lock instead of being obeyed blindly.
+        guard Self.shouldHonourNeverAutoLock else {
+            if let t = backgroundedAt, Date().timeIntervalSince(t) >= 60 { lock() }
+            backgroundedAt = nil
+            return
+        }
+
         let timeout = AppSettingsStore.autoLockTimeout
+        if timeout == AppSettingsStore.neverLocks {
+            // Explicitly configured: no timeout. The vault still locks on relaunch,
+            // on manual Lock Now, and when the app is terminated with the vault key
+            // cleared, so this is a convenience choice rather than an open door.
+            backgroundedAt = nil
+            return
+        }
         if timeout <= 0 { lock(); return }
         if let t = backgroundedAt, Date().timeIntervalSince(t) >= Double(timeout) { lock() }
         backgroundedAt = nil
+    }
+
+    /// Whether a configured "Never" may actually be applied.
+    ///
+    /// Kept as a computed property rather than inlined so the rule is stated once and
+    /// can be asserted by a test.
+    static var shouldHonourNeverAutoLock: Bool {
+        AppSettingsStore.neverAutoLockAllowed
     }
     func authenticateIfNeeded() async {
         if isUnlocked { return }

@@ -17,6 +17,14 @@ struct SettingsView: View {
 
     private let lockOptions = [(0, "Immediately"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes")]
 
+    /// Options shown in the picker. "Never" is appended only when the device can still
+    /// be re-locked some other way, so it is never offered as a one-way door.
+    private var lockPickerOptions: [(Int, String)] {
+        AppSettingsStore.neverAutoLockAllowed
+            ? lockOptions + [(AppSettingsStore.neverLocks, "Never")]
+            : lockOptions
+    }
+
     private var stats: StorageService.Stats {
         StorageService.shared.stats(media: media, albums: albums)
     }
@@ -39,11 +47,17 @@ struct SettingsView: View {
                         Button("Set up PIN") { showingPINSetup = true }
                     }
                     Picker("Auto-lock", selection: $autoLock) {
-                        ForEach(lockOptions, id: \.0) { Text($0.1).tag($0.0) }
+                        ForEach(lockPickerOptions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .onChange(of: autoLock) { _, v in AppSettingsStore.setAutoLock(v) }
                 } header: {
                     Text("Security")
+                } footer: {
+                    if autoLock == AppSettingsStore.neverLocks {
+                        Text("MyVault will not lock itself when you switch away. It still locks when you tap Lock Now or relaunch the app. Turn on Face ID or set a PIN so you can lock the vault on demand.")
+                    } else if !AppSettingsStore.neverAutoLockAllowed {
+                        Text("Set up a PIN or turn on Face ID to unlock the “Never” option. Without one, the vault would have no way back to a locked state.")
+                    }
                 } footer: {
                     if !PINService.shared.isEnabled {
                         Text("Set up a PIN first if you want to turn Face ID off; otherwise biometrics are the only way to unlock.")
@@ -116,7 +130,17 @@ struct SettingsView: View {
             .sheet(isPresented: $showingPINSetup) { PINSetupView() }
             .sheet(isPresented: $showingStorage) { StorageView() }
             .sheet(isPresented: $showingDuplicates) { DuplicatesView() }
-            .task { notifStatus = await NotificationService.shared.authorizationStatus() }
+            .task {
+                notifStatus = await NotificationService.shared.authorizationStatus()
+                // If "Never" is stored but is no longer a safe choice — for example the
+                // PIN was disabled after it was selected — the picker would have no
+                // matching tag and would render blank. Repair the stored value so the
+                // setting always reflects something the UI can show and the app obeys.
+                if autoLock == AppSettingsStore.neverLocks, !AppSettingsStore.neverAutoLockAllowed {
+                    autoLock = 60
+                    AppSettingsStore.setAutoLock(60)
+                }
+            }
         }
     }
 

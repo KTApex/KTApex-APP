@@ -22,8 +22,31 @@ final class BackupMetadata {
 }
 
 enum AppSettingsStore {
+    /// Auto-lock timeout in seconds. `0` means *immediately*; `Self.neverLocks`
+    /// means *never*.
+    ///
+    /// "Never" needs a value that `didBecomeActive` cannot confuse with "immediately".
+    /// The previous code treated every value `<= 0` as immediate, so a `0`-based
+    /// sentinel would have locked the vault the instant the app came to the foreground
+    /// instead of never locking it.
+    static let neverLocks = -1
+
     static var autoLockTimeout: Int { UserDefaults.standard.object(forKey: "mv.autolock") as? Int ?? 60 }
     static func setAutoLock(_ s: Int) { UserDefaults.standard.set(s, forKey: "mv.autolock") }
+
+    /// True when the user has asked MyVault never to lock on its own.
+    static var autoLockDisabled: Bool { autoLockTimeout == neverLocks }
+
+    /// Whether "Never" is a safe choice on this device.
+    ///
+    /// Never is a legitimate convenience setting, but it is only defensible when the
+    /// user can still put the vault back into a locked state by other means: biometrics
+    /// or a PIN. With neither configured, "Never" would leave encrypted media reachable
+    /// with no re-entry path at all, so the option is refused instead of silently
+    /// accepted.
+    static var neverAutoLockAllowed: Bool {
+        biometricEnabled || PINService.shared.isEnabled
+    }
     static var biometricEnabled: Bool { UserDefaults.standard.object(forKey: "mv.bio") as? Bool ?? true }
     static func setBiometricEnabled(_ enabled: Bool) { UserDefaults.standard.set(enabled, forKey: "mv.bio") }
 
