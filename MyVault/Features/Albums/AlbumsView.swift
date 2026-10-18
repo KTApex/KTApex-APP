@@ -9,6 +9,7 @@ import SwiftData
 struct AlbumsView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
+    @Query(sort: \VaultMedia.createdAt, order: .reverse) private var liveMedia: [VaultMedia]
 
     enum AlbumSort: String, CaseIterable, Identifiable {
         case name, newest, itemCount
@@ -60,7 +61,7 @@ struct AlbumsView: View {
                 MVEmptyState(
                     symbol: "magnifyingglass",
                     title: "No matching albums",
-                    subtitle: "No album name contains “\(searchText)”.",
+                    subtitle: "No album name contains â€œ\(searchText)â€.",
                     actionTitle: "Clear Search",
                     action: { searchText = "" }
                 )
@@ -70,7 +71,10 @@ struct AlbumsView: View {
                         NavigationLink {
                             AlbumDetailView(album: album)
                         } label: {
-                            AlbumRow(album: album)
+                            // The library is passed in so a cover can be resolved from
+                            // the album's real members (and its chosen cover) rather
+                            // than by walking a relationship that may lag behind.
+                            AlbumRow(album: album, library: liveMedia)
                         }
                         .swipeActions(edge: .trailing) {
                             Button("Delete", role: .destructive) { deleting = album }
@@ -110,7 +114,7 @@ struct AlbumsView: View {
             Button("Cancel", role: .cancel) { renaming = nil }
         }
         .confirmationDialog(
-            "Delete “\(deleting?.name ?? "")”?",
+            "Delete â€œ\(deleting?.name ?? "")â€?",
             isPresented: deleteBinding,
             titleVisibility: .visible,
             presenting: deleting
@@ -118,7 +122,7 @@ struct AlbumsView: View {
             Button("Delete Album", role: .destructive) { delete(album) }
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: { album in
-            Text("The \(album.itemCount) item\(album.itemCount == 1 ? "" : "s") in this album stay in your vault — only the album is removed.")
+            Text("The \(album.itemCount) item\(album.itemCount == 1 ? "" : "s") in this album stay in your vault â€” only the album is removed.")
         }
         .alert("Album not saved", isPresented: alertBinding) {
             Button("OK", role: .cancel) { alertMessage = nil }
@@ -188,9 +192,16 @@ struct AlbumsView: View {
         renaming = nil
     }
 
-    /// Detaches the media first so the album relationship is cleared explicitly
-    /// rather than relying on a delete rule.
+    /// Deletes the album and nothing else.
+    ///
+    /// Membership is stripped from the items first, so no item keeps a label pointing
+    /// at an album that no longer exists. The encrypted files are never touched: this
+    /// removes a way of grouping the library, not its contents.
     private func delete(_ album: VaultAlbum) {
+        // Every item in the library is inspected, not just `album.media`: with the
+        // multi-album model the relationship can lag behind the ID list, and a stale
+        // ID would resurrect the album in a filter.
+        AlbumEditor.detachAll(in: liveMedia, albumID: album.id)
         for item in album.media { item.album = nil }
         context.delete(album)
         context.saveReporting { _ in
@@ -201,14 +212,13 @@ struct AlbumsView: View {
     }
 }
 
-/// Cover card used by the home screen's horizontal album strip. Shows the first
-/// live item's thumbnail rather than a generic folder glyph.
+/// Cover card used by the home screen's horizontal album strip. Shows the album's
+/// chosen cover, falling back to its newest live item rather than a generic folder.
 struct AlbumCard: View {
     let album: VaultAlbum
+    @Query(sort: \VaultMedia.createdAt, order: .reverse) private var allMedia: [VaultMedia]
 
-    private var cover: VaultMedia? {
-        album.media.first { !$0.isInTrash }
-    }
+    private var cover: VaultMedia? { AlbumEditor.cover(for: album, from: allMedia) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -237,9 +247,13 @@ struct AlbumCard: View {
 
 struct AlbumRow: View {
     let album: VaultAlbum
+    /// Live library, passed in by the list so each row does not run its own query.
+    var library: [VaultMedia] = []
 
     private var cover: VaultMedia? {
-        album.media.first { !$0.isInTrash }
+        library.isEmpty
+            ? album.media.first { !$0.isInTrash }
+            : AlbumEditor.cover(for: album, from: library)
     }
 
     var body: some View {
@@ -270,3 +284,5 @@ struct AlbumRow: View {
         .accessibilityLabel("\(album.name), \(album.itemCount) items")
     }
 }
+
+

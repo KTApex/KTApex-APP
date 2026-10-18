@@ -342,7 +342,10 @@ final class PortableBackupService: ObservableObject {
                 width: item.width,
                 height: item.height,
                 duration: item.duration,
-                albumID: item.album?.id,
+                albumID: item.albumIDs.first ?? item.album?.id,
+                // Written in addition to `albumID` so a full-membership backup stays
+                // readable by older builds while losing nothing in this one.
+                albumIDs: item.albumIDs.isEmpty ? nil : item.albumIDs,
                 entryName: entryName
             ))
             bytes += item.fileSize
@@ -550,6 +553,23 @@ final class PortableBackupService: ObservableObject {
                 createdAlbums += 1
             }
 
+            // Items the restore skipped as duplicates are still allowed to contribute
+            // their album labels. Without this, restoring a backup into a vault that
+            // already holds the same photos would create the albums and leave them
+            // empty, which reads as data loss even though every file is present.
+            let byHash = Dictionary(
+                existingMedia.filter { !$0.contentHash.isEmpty }.map { ($0.contentHash, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for media in manifest.media {
+                guard let existing = byHash[media.contentHash] else { continue }
+                let wanted = media.memberships.filter { albumsByID[$0] != nil }
+                let missing = wanted.filter { !existing.belongs(toAlbumID: $0) }
+                guard !missing.isEmpty else { continue }
+                existing.albumIDs.append(contentsOf: missing)
+                if existing.album == nil, let first = missing.first { existing.album = albumsByID[first] }
+            }
+
             for item in encrypted {
                 let media = item.media
                 let model = VaultMedia(
@@ -567,7 +587,13 @@ final class PortableBackupService: ObservableObject {
                 model.width = media.width
                 model.height = media.height
                 model.duration = media.duration
-                if let albumID = media.albumID { model.album = albumsByID[albumID] }
+                // `memberships` covers both shapes: a new backup lists every album, an
+                // old one only the primary. IDs that do not resolve (an album the
+                // backup did not contain) are dropped rather than stored as a dangling
+                // reference.
+                let restoredIDs = media.memberships.filter { albumsByID[$0] != nil }
+                model.albumIDs = restoredIDs
+                if let primary = restoredIDs.first { model.album = albumsByID[primary] }
                 context.insert(model)
             }
 

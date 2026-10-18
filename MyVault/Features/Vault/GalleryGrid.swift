@@ -13,61 +13,69 @@ import UIKit
 /// SwiftUI's own safe-area handling keeps the last row clear.
 struct GalleryGrid: View {
     let sections: [GallerySection]
-    let columnCount: Int
+    let density: GalleryDensity
     let isSelecting: Bool
     @Binding var selection: Set<String>
     let onOpen: (VaultMedia) -> Void
     let onToggleSelection: (VaultMedia) -> Void
+    /// Called when a pinch changes density, so the owner can persist it.
+    var onDensityChange: ((GalleryDensity) -> Void)? = nil
+
+    @Environment(\.displayScale) private var displayScale
+
+    /// Width last reported by the background GeometryReader. Stored in state so the
+    /// columns are derived once per change instead of on every body pass.
+    @State private var measuredWidth: CGFloat = 0
 
     /// Spacing between tiles. Kept tight and uniform so the grid reads as one
-    /// continuous surface rather than a set of separated cards.
-    private static let spacing: CGFloat = 2
+    /// continuous surface rather than a set of separated cards. Wider thumbnails get
+    /// slightly more air, which keeps large tiles from looking squeezed together.
+    private var spacing: CGFloat {
+        switch density {
+        case .compact: return 1.5
+        case .standard: return 2
+        case .comfortable, .large: return 3
+        }
+    }
+
     /// Vertical gap between one date section and the next. Larger than the tile
     /// spacing so grouping is legible without separators.
     private static let sectionSpacing: CGFloat = 10
 
-    private var columns: [GridItem] {
-        Array(
-            repeating: GridItem(.flexible(), spacing: Self.spacing, alignment: .top),
-            count: max(2, min(columnCount, 5))
-        )
-    }
-
     var body: some View {
+        // The column count comes from the width the grid is actually given, not from
+        // the screen, so rotation also resolves correctly. The width is measured by an
+        // invisible zero-height row that *reports* through a preference and adds no
+        // layout height of its own — wrapping the scroll view in a GeometryReader would
+        // collapse its height, and a fixed screen width would ignore landscape.
         ScrollView(.vertical) {
-            LazyVGrid(
-                columns: columns,
-                alignment: .center,
-                spacing: Self.spacing,
-                pinnedViews: [.sectionHeaders]
-            ) {
-                ForEach(sections) { section in
-                    Section {
-                        ForEach(section.items) { item in
-                            GalleryThumbCell(
-                                item: item,
-                                isSelecting: isSelecting,
-                                isSelected: selection.contains(item.id),
-                                showsAlbumBadge: item.album != nil,
-                                onTap: {
-                                    if isSelecting {
-                                        onToggleSelection(item)
-                                    } else {
-                                        onOpen(item)
-                                    }
-                                }
-                            )
-                        }
-                    } header: {
-                        GallerySectionHeader(section: section)
-                    }
-                }
-            }
+            LazyVGridLayout(
+                sections: sections,
+                density: density,
+                spacing: spacing,
+                isSelecting: isSelecting,
+                selection: $selection,
+                displayScale: displayScale,
+                measuredWidth: measuredWidth,
+                onOpen: onOpen,
+                onToggleSelection: onToggleSelection
+            )
             // Trailing room at the end of the scroll only. Group separation is done by
             // the header's own top padding, so no per-section footer is needed — a
             // section footer in `LazyVGrid` occupies a full grid row and would have
             // doubled the gap and pushed the last row away from the tab bar.
             .padding(.bottom, Self.sectionSpacing)
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: GalleryWidthKey.self, value: proxy.size.width)
+            }
+        }
+        .onPreferenceChange(GalleryWidthKey.self) { width in
+            // Guarded so a sub-point change (keyboard, scroll indicator) cannot cause a
+            // re-layout loop.
+            guard abs(width - measuredWidth) > 0.5, width > 0 else { return }
+            measuredWidth = width
         }
         // Fills the viewport even when there are only one or two photos, so the grid
         // starts at the top instead of floating in the middle of the screen. The
@@ -77,6 +85,87 @@ struct GalleryGrid: View {
         // Lets the content scroll *under* the tab bar briefly while still leaving the
         // final row reachable, which is how a native photo grid behaves.
         .scrollDismissesKeyboard(.immediately)
+        // Pinch changes density instead of zooming the whole grid, which keeps the
+        // text crisp and avoids the blurry "scale a screenshot" look.
+        .galleryPinch(density: density) { next in
+            onDensityChange?(next)
+        }
+    }
+}
+
+/// Width of the gallery, reported out of a background GeometryReader.
+private struct GalleryWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// The grid itself. Split out so the width measurement above stays readable, and so
+/// the columns are computed in exactly one place.
+private struct LazyVGridLayout: View {
+    let sections: [GallerySection]
+    let density: GalleryDensity
+    let spacing: CGFloat
+    let isSelecting: Bool
+    @Binding var selection: Set<String>
+    let displayScale: CGFloat
+    let measuredWidth: CGFloat
+    let onOpen: (VaultMedia) -> Void
+    let onToggleSelection: (VaultMedia) -> Void
+
+    private var columnCount: Int {
+        density.columns(forWidth: measuredWidth)
+    }
+
+    private var columns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+            count: columnCount
+        )
+    }
+
+    /// Edge length of one tile in points, so each cell can ask the cache for a
+    /// thumbnail at the size it will actually be drawn.
+    private var tileWidth: CGFloat {
+        let usable = max(measuredWidth, 1) - spacing * CGFloat(columnCount - 1)
+        return max(usable / CGFloat(columnCount), 1)
+    }
+
+    private var tilePixels: CGFloat {
+        GalleryDensity.thumbnailPixels(tileWidth: tileWidth, displayScale: displayScale)
+    }
+
+    var body: some View {
+        LazyVGrid(
+            columns: columns,
+            alignment: .center,
+            spacing: spacing,
+            pinnedViews: [.sectionHeaders]
+        ) {
+            ForEach(sections) { section in
+                Section {
+                    ForEach(section.items) { item in
+                        GalleryThumbCell(
+                            item: item,
+                            isSelecting: isSelecting,
+                            isSelected: selection.contains(item.id),
+                            showsAlbumBadge: !item.albumIdentifiers.isEmpty,
+                            pixelSize: tilePixels,
+                            onTap: {
+                                if isSelecting {
+                                    onToggleSelection(item)
+                                } else {
+                                    onOpen(item)
+                                }
+                            }
+                        )
+                    }
+                } header: {
+                    GallerySectionHeader(section: section)
+                }
+            }
+        }
     }
 }
 
@@ -145,6 +234,8 @@ struct GalleryThumbCell: View {
     let isSelecting: Bool
     let isSelected: Bool
     let showsAlbumBadge: Bool
+    /// Thumbnail size requested from the cache, matched to the tile's drawn size.
+    var pixelSize: CGFloat = 400
     let onTap: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -162,6 +253,12 @@ struct GalleryThumbCell: View {
                         .transition(reduceMotion ? .identity : .opacity)
                 } else {
                     placeholder
+                }
+                if isSelecting {
+                    // A soft scrim keeps the checkmark readable on a bright photo
+                    // without dimming the whole library, which makes selection feel
+                    // like a mode change rather than a filter.
+                    Rectangle().fill(.black.opacity(0.18))
                 }
             }
             .clipped()
@@ -182,8 +279,12 @@ struct GalleryThumbCell: View {
         .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .task(id: item.id) { await load() }
+        .task(id: cacheKey) { await load() }
     }
+
+    /// A density change asks for a different pixel size, which must re-run the load
+    /// even though the item is the same.
+    private var cacheKey: String { "\(item.id)-\(Int(pixelSize))" }
 
     private var placeholder: some View {
         Group {
@@ -248,7 +349,12 @@ struct GalleryThumbCell: View {
         var parts = [item.fileName.isEmpty ? (item.isVideo ? "Video" : "Photo") : item.fileName]
         if item.isVideo { parts.append(Self.durationText(item.duration)) }
         if item.isFavorite { parts.append("Favorite") }
-        if let album = item.album?.name { parts.append("Album \(album)") }
+        let albumCount = item.albumIdentifiers.count
+        if let album = item.album?.name, albumCount <= 1 {
+            parts.append("Album \(album)")
+        } else if albumCount > 1 {
+            parts.append("In \(albumCount) albums")
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -266,12 +372,13 @@ struct GalleryThumbCell: View {
 
     @MainActor
     private func load() async {
-        if let cached = ThumbnailCache.shared.cachedThumbnail(for: item, pixelSize: 400) {
+        let wanted = pixelSize
+        if let cached = ThumbnailCache.shared.cachedThumbnail(for: item, pixelSize: wanted) {
             image = cached
             didFinishLoading = true
             return
         }
-        let loaded = await ThumbnailCache.shared.thumbnail(for: item, pixelSize: 400)
+        let loaded = await ThumbnailCache.shared.thumbnail(for: item, pixelSize: wanted)
         guard !Task.isCancelled else { return }
         image = loaded
         didFinishLoading = true

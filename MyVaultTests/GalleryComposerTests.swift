@@ -61,6 +61,37 @@ final class GalleryComposerTests: XCTestCase {
         XCTAssertEqual(GalleryComposer.filter(items, filter: .albums).count, 2)
     }
 
+    // MARK: - Multi-album membership
+
+    func testAlbumMembershipIsMatchedByIDNotRelationship() {
+        // Simulates a row whose relationship was cleared but whose ID list survived —
+        // the state after a relaunch or a partial restore. The item must still be
+        // found, because the ID list is the source of truth.
+        let holiday = VaultAlbum(name: "Holiday")
+        let beach = media(name: "beach")
+        beach.albumIDs = [holiday.id]
+
+        XCTAssertEqual(GalleryComposer.filter([beach], album: holiday).map(\.fileName), ["beach"])
+    }
+
+    func testItemInTwoAlbumsAppearsInBoth() {
+        let holiday = VaultAlbum(name: "Holiday")
+        let family = VaultAlbum(name: "Family")
+        let beach = media(name: "beach")
+        beach.albumIDs = [holiday.id, family.id]
+
+        XCTAssertEqual(GalleryComposer.filter([beach], album: holiday).count, 1)
+        XCTAssertEqual(GalleryComposer.filter([beach], album: family).count, 1)
+        XCTAssertEqual(GalleryComposer.filter([beach], filter: .albums).count, 1,
+                       "the albums filter means \"in some album\"")
+    }
+
+    func testSearchStillFindsAlbumMembers() {
+        let holiday = VaultAlbum(name: "Summer Holiday")
+        let beach = media(name: "beach", album: holiday)
+        XCTAssertEqual(GalleryComposer.filter([beach], search: "summer").map(\.fileName), ["beach"])
+    }
+
     func testFiltersCombine() {
         let holiday = VaultAlbum(name: "Holiday")
         let items = [

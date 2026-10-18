@@ -50,9 +50,85 @@ struct BackupManifest: Codable, Equatable {
         var width: Int
         var height: Int
         var duration: Double
+        /// Primary album, written since schema 1. Kept so a backup taken by this build
+        /// is still readable by an older one and vice versa.
         var albumID: String?
+        /// Every album this item belongs to.
+        ///
+        /// Optional so backups written before multi-album support decode unchanged
+        /// (the key is simply absent), and the restore path falls back to `albumID` in
+        /// that case. Additive, so the schema version does not need to change.
+        var albumIDs: [String]?
         /// Name of the archive entry holding this item's bytes.
         var entryName: String
+
+        /// Decodes leniently for the two fields added after schema 1.
+        ///
+        /// A synthesised decoder requires every key even when the property is
+        /// optional, so a backup written by an older build — which has `albumID` but no
+        /// `albumIDs` — would fail to load. Restoring a user's own backup is the one
+        /// path that must never break, so absence is treated as "not present" rather
+        /// than as corruption.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            fileName = try container.decode(String.self, forKey: .fileName)
+            mediaType = try container.decode(String.self, forKey: .mediaType)
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+            isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+            isInTrash = try container.decodeIfPresent(Bool.self, forKey: .isInTrash) ?? false
+            trashedAt = try container.decodeIfPresent(Date.self, forKey: .trashedAt)
+            fileSize = try container.decodeIfPresent(Int.self, forKey: .fileSize) ?? 0
+            contentHash = try container.decodeIfPresent(String.self, forKey: .contentHash) ?? ""
+            width = try container.decodeIfPresent(Int.self, forKey: .width) ?? 0
+            height = try container.decodeIfPresent(Int.self, forKey: .height) ?? 0
+            duration = try container.decodeIfPresent(Double.self, forKey: .duration) ?? 0
+            albumID = try container.decodeIfPresent(String.self, forKey: .albumID)
+            albumIDs = try container.decodeIfPresent([String].self, forKey: .albumIDs)
+            entryName = try container.decode(String.self, forKey: .entryName)
+        }
+
+        /// Memberwise initialiser, preserved so call sites read as before.
+        init(
+            id: String,
+            fileName: String,
+            mediaType: String,
+            createdAt: Date,
+            isFavorite: Bool,
+            isInTrash: Bool,
+            trashedAt: Date?,
+            fileSize: Int,
+            contentHash: String,
+            width: Int,
+            height: Int,
+            duration: Double,
+            albumID: String?,
+            albumIDs: [String]? = nil,
+            entryName: String
+        ) {
+            self.id = id
+            self.fileName = fileName
+            self.mediaType = mediaType
+            self.createdAt = createdAt
+            self.isFavorite = isFavorite
+            self.isInTrash = isInTrash
+            self.trashedAt = trashedAt
+            self.fileSize = fileSize
+            self.contentHash = contentHash
+            self.width = width
+            self.height = height
+            self.duration = duration
+            self.albumID = albumID
+            self.albumIDs = albumIDs
+            self.entryName = entryName
+        }
+
+        /// Every album this entry claims, whichever shape the backup used.
+        var memberships: [String] {
+            if let albumIDs, !albumIDs.isEmpty { return albumIDs }
+            if let albumID { return [albumID] }
+            return []
+        }
     }
 
     struct SpecialDay: Codable, Equatable {

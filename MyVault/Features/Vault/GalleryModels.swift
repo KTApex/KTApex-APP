@@ -106,7 +106,7 @@ enum GalleryComposer {
         // `localizedCaseInsensitiveContains` only folds case, not diacritics, so
         // "cafe" would miss "Café.jpg" if it were used here.
         if folded(item.fileName).contains(needle) { return true }
-        if let albumName = item.album?.name, folded(albumName).contains(needle) { return true }
+        if item.albumNames.contains(where: { folded($0).contains(needle) }) { return true }
         if DateSearchTerms.terms(for: item.createdAt).contains(where: { folded($0).contains(needle) }) { return true }
         if SearchKeywords.mediaTypeTerms(for: item).contains(needle) { return true }
         if SearchKeywords.favoriteTerms.contains(needle), item.isFavorite { return true }
@@ -126,13 +126,13 @@ enum GalleryComposer {
     ) -> [VaultMedia] {
         items.filter { item in
             guard !item.isInTrash else { return false }
-            if let album, item.album?.id != album.id { return false }
+            if let album, !item.belongs(to: album) { return false }
             switch filter {
             case .all: break
             case .photos: if item.isVideo { return false }
             case .videos: if !item.isVideo { return false }
             case .favorites: if !item.isFavorite { return false }
-            case .albums: if item.album == nil { return false }
+            case .albums: if item.albumIdentifiers.isEmpty { return false }
             }
             return matches(item, search: search, album: album)
         }

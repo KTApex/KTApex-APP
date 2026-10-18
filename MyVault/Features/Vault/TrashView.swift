@@ -6,6 +6,7 @@ import SwiftData
 /// Trashing is deliberately cheap (one tap, reversible) while permanent deletion
 /// always asks first, and only this screen ever deletes vault ciphertext.
 struct TrashView: View {
+    @EnvironmentObject private var appState: AppState
     @Environment(\.modelContext) private var context
     @Query(filter: #Predicate<VaultMedia> { $0.isInTrash }, sort: \VaultMedia.createdAt, order: .reverse)
     private var trashed: [VaultMedia]
@@ -74,7 +75,8 @@ struct TrashView: View {
             Text(dialogMessage(action))
         }
         .fullScreenCover(item: $viewerItem) { item in
-            MediaViewerView(items: items, selectedID: item.id)
+            MediaViewerView(items: items, selectedID: item.id, title: "Recently Deleted")
+                .environmentObject(appState)
         }
         .alert("Trash", isPresented: alertBinding) {
             Button("OK", role: .cancel) { alertMessage = nil }

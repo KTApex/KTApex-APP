@@ -14,15 +14,22 @@ import UIKit
 struct MediaViewerView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    /// Required: both call sites (`VaultView`, `AlbumDetailView`) supply it, and it
+    /// drives the lock guard below. It is also what lets a lock tear the viewer down
+    /// rather than leaving decrypted pixels resident behind the lock screen.
+    @EnvironmentObject private var appState: AppState
     @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
 
     let items: [VaultMedia]
     let selectedID: String?
+    /// Shown in the navigation title so an album viewer says which album it is.
+    var title: String? = nil
 
     @State private var index = 0
     @State private var showingInfo = false
     @State private var shareBundle: ShareService.Prepared?
     @State private var alertItem: ViewerAlert?
+    @State private var slideshowRequest: SlideshowRequest?
 
     /// Legacy convenience initializer used by album detail.
     init(item: VaultMedia) {
@@ -33,6 +40,20 @@ struct MediaViewerView: View {
     init(items: [VaultMedia], selectedID: String?) {
         self.items = items
         self.selectedID = selectedID
+    }
+
+    init(items: [VaultMedia], selectedID: String?, title: String?) {
+        self.items = items
+        self.selectedID = selectedID
+        self.title = title
+    }
+
+    /// Also used to start a slideshow from the current photo.
+    struct SlideshowRequest: Identifiable {
+        let id = UUID()
+        let items: [VaultMedia]
+        let startIndex: Int
+        let title: String?
     }
 
     struct ViewerAlert: Identifiable {
@@ -64,6 +85,10 @@ struct MediaViewerView: View {
                 } else {
                     TabView(selection: $index) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { position, media in
+                            // Keyed on the position, and told which position it is, so
+                            // swiping away from a zoomed photo resets it. Without this
+                            // the page keeps its 3× scale and the *next* photo opens
+                            // already cropped into its own corner.
                             MediaPageView(media: media, isActive: position == index)
                                 .tag(position)
                         }
@@ -71,14 +96,36 @@ struct MediaViewerView: View {
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .accessibilityLabel("Media viewer")
                 }
+
+                // Unobtrusive counter. Lives over the media rather than in the
+                // toolbar, so it stays visible without a second look at the top bar,
+                // and uses `.overlay` semantics so it never shifts the page.
+                if let counter = currentPositionText {
+                    VStack {
+                        Spacer()
+                        Text(counter)
+                            .font(.caption.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.35), in: Capsule())
+                            .padding(.bottom, 8)
+                            .accessibilityLabel("Item \(index + 1) of \(items.count)")
+                    }
+                    .allowsHitTesting(false)
+                }
             }
-            .navigationTitle(item?.fileName ?? "")
+            .navigationTitle(title ?? item?.fileName ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar { toolbarContent }
             .statusBarHidden(false)
             .sheet(isPresented: $showingInfo) { infoSheet }
+            .fullScreenCover(item: $slideshowRequest) { request in
+                SlideshowView(items: request.items, startIndex: request.startIndex, title: request.title)
+            }
             .alert(alertItem?.title ?? "", isPresented: alertBinding, presenting: alertItem) { _ in
                 Button("OK", role: .cancel) { alertItem = nil }
             } message: { alert in
@@ -90,6 +137,12 @@ struct MediaViewerView: View {
         .preferredColorScheme(.dark)
         .onAppear { syncIndex() }
         .onChange(of: items.count) { _, _ in syncIndex() }
+        // A lock must take the media off screen immediately, not merely leave it
+        // behind the lock screen. Dismissing here also stops any video playback and
+        // releases the decoded image held by the page.
+        .onChange(of: appState.isUnlocked) { _, unlocked in
+            if !unlocked { dismiss() }
+        }
     }
 
     // MARK: - Toolbar
@@ -105,6 +158,9 @@ struct MediaViewerView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                if items.count > 1 {
+                    Button { startSlideshow() } label: { Label("Slideshow", systemImage: "play.rectangle") }
+                }
                 if !albums.isEmpty {
                     Menu("Add to Album") {
                         ForEach(albums) { album in
@@ -116,9 +172,6 @@ struct MediaViewerView: View {
                     }
                 }
                 Button { saveToPhotos() } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
-                if let count = currentPositionText {
-                    Text(count)
-                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -217,11 +270,37 @@ struct MediaViewerView: View {
 
     private func assign(to album: VaultAlbum?) {
         guard let item else { return }
-        item.album = album
+        if let album {
+            // Additive, matching the grid: filing from the viewer must not pull the
+            // item out of the album it was already in.
+            guard AlbumEditor.add([item], to: album) else {
+                alertItem = ViewerAlert(title: "Already in \(album.name)", message: "This item is already in that album.")
+                return
+            }
+        } else {
+            // "Remove from Album" with no target means "clear every album label on
+            // this item", which is the only unambiguous reading from the viewer where
+            // no particular album is on screen.
+            item.albumIDs.removeAll()
+            item.album = nil
+        }
         context.saveReporting { _ in
             alertItem = ViewerAlert(title: "Not saved", message: "The album change could not be saved.")
         }
         Haptics.success()
+    }
+
+    /// Starts a slideshow over the viewer's collection, beginning at the photo the
+    /// user is looking at.
+    private func startSlideshow() {
+        let snapshot = items
+        guard snapshot.count > 1 else { return }
+        Haptics.tap()
+        slideshowRequest = SlideshowRequest(
+            items: snapshot,
+            startIndex: min(max(index, 0), snapshot.count - 1),
+            title: title
+        )
     }
 
     private func share(_ item: VaultMedia) {
@@ -337,7 +416,11 @@ private struct MediaPageView: View {
         }
         .task(id: media.id) { await load() }
         .onChange(of: isActive) { _, active in
-            if !active { player?.pause() }
+            if !active {
+                player?.pause()
+                // Leaving a zoomed photo must not carry the scale into the next one.
+                resetZoom(animated: false)
+            }
         }
         .onDisappear { cleanup() }
     }

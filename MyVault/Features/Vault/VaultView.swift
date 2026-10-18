@@ -24,12 +24,16 @@ struct VaultView: View {
     @State private var filter: MediaFilter = .all
     @State private var sortOrder: GallerySort = .newest
     @State private var grouping: GalleryGrouping = .day
-    @AppStorage("mv.galleryColumns") private var columnCount = 3
+    /// Thumbnail density, persisted through `UserDefaults`. Seeded from the stored
+    /// preference (and the legacy column count) so an existing user keeps their grid.
+    @State private var density: GalleryDensity = GalleryDensity.load()
     @State private var selectedAlbumID: String?
 
     @State private var selection = Set<String>()
     @State private var isSelecting = false
     @State private var viewerItem: VaultMedia?
+    /// Set by the Slideshow button; carries an immutable snapshot of the collection.
+    @State private var slideshowRequest: SlideshowRequest?
 
     @State private var shareBundle: ShareService.Prepared?
     @State private var alertItem: VaultAlert?
@@ -77,6 +81,46 @@ struct VaultView: View {
         filter != .all || selectedAlbum != nil || !searchText.isBlank
     }
 
+    /// Name of what is on screen, used as the slideshow/viewer title so an album
+    /// slideshow says "Holiday" rather than "Slideshow".
+    private var collectionTitle: String {
+        if let album = selectedAlbum { return album.name }
+        if filter != .all { return filter.title }
+        return "Vault"
+    }
+
+    /// Immutable description of "start a slideshow over these items".
+    ///
+    /// `Identifiable` so `fullScreenCover(item:)` presents it exactly once per tap,
+    /// and a fresh value each time, which also resets playback cleanly.
+    struct SlideshowRequest: Identifiable {
+        let id = UUID()
+        let items: [VaultMedia]
+        let startIndex: Int
+        let title: String
+    }
+
+    private func startSlideshow() {
+        let items = visibleMedia
+        guard !items.isEmpty else {
+            // Reached only if the collection emptied between the menu opening and the
+            // tap. Reported rather than presenting an empty black screen.
+            alertItem = VaultAlert(
+                title: "Nothing to play",
+                message: "There are no photos or videos in this collection."
+            )
+            return
+        }
+        Haptics.tap()
+        slideshowRequest = SlideshowRequest(items: items, startIndex: 0, title: collectionTitle)
+    }
+
+    private func setDensity(_ next: GalleryDensity) {
+        guard next != density else { return }
+        density = next
+        GalleryDensity.save(next)
+    }
+
     // MARK: - Body
 
     /// The body is deliberately split into layers. One long chain of modifiers,
@@ -94,7 +138,23 @@ struct VaultView: View {
             // screen, its own presentation layer above the tab bar, and correct
             // safe-area ownership.
             .fullScreenCover(item: $viewerItem) { item in
-                MediaViewerView(items: visibleMedia, selectedID: item.id)
+                MediaViewerView(items: visibleMedia, selectedID: item.id, title: collectionTitle)
+                    .environmentObject(appState)
+            }
+            // Slideshow is a full-screen cover of its own: it owns the whole screen,
+            // cannot be swiped away into a grid it no longer matches, and is torn down
+            // (with its playback task) when the vault locks.
+            //
+            // The collection is snapshotted into `slideshowRequest` when the button is
+            // tapped, so the cover can never present with an empty list (which would
+            // flash a blank sheet), and a SwiftData change during playback cannot
+            // reshuffle the order under the viewer.
+            .fullScreenCover(item: $slideshowRequest) { request in
+                SlideshowView(
+                    items: request.items,
+                    startIndex: request.startIndex,
+                    title: request.title
+                )
             }
             .confirmationDialog(
                 "Remove originals from Photos?",
@@ -176,11 +236,12 @@ struct VaultView: View {
         } else {
             GalleryGrid(
                 sections: sections,
-                columnCount: columnCount,
+                density: density,
                 isSelecting: isSelecting,
                 selection: $selection,
                 onOpen: { viewerItem = $0 },
-                onToggleSelection: { toggleSelection($0) }
+                onToggleSelection: { toggleSelection($0) },
+                onDensityChange: { setDensity($0) }
             )
         }
     }
@@ -389,6 +450,18 @@ struct VaultView: View {
                     .accessibilityLabel(isSelecting ? "Finish selecting" : "Select items")
             }
         }
+        // Slideshow gets its own control rather than living only in the more menu: it
+        // is one of the two things people open a photo gallery for, and a feature
+        // buried two taps deep reads as missing.
+        ToolbarItem(placement: .topBarTrailing) {
+            if !visibleMedia.isEmpty && !isSelecting {
+                Button { startSlideshow() } label: {
+                    Image(systemName: "play.rectangle")
+                }
+                .accessibilityLabel("Start slideshow")
+                .accessibilityIdentifier("vault.slideshow")
+            }
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button(action: beginImport) {
                 Image(systemName: "plus")
@@ -403,12 +476,20 @@ struct VaultView: View {
 
     @ViewBuilder
     private var moreMenu: some View {
+        if !visibleMedia.isEmpty {
+            Section {
+                Button { startSlideshow() } label: {
+                    Label("Slideshow", systemImage: "play.rectangle")
+                }
+            }
+        }
         Section("Layout") {
-            Picker("Columns", selection: $columnCount) {
-                Text("2 Columns").tag(2)
-                Text("3 Columns").tag(3)
-                Text("4 Columns").tag(4)
-                Text("5 Columns").tag(5)
+            // Density, not a raw column count: the same choice then reads the same on
+            // an iPhone SE and a Pro Max. Pinching the grid adjusts this too.
+            Picker("Thumbnail Size", selection: densityBinding) {
+                ForEach(GalleryDensity.ordered) { option in
+                    Label(option.title, systemImage: option.symbol).tag(option)
+                }
             }
             Picker("Grouping", selection: $grouping) {
                 ForEach(GalleryGrouping.allCases) { option in
@@ -482,6 +563,18 @@ struct VaultView: View {
 
     private var albumBinding: Binding<String?> {
         Binding(get: { selectedAlbumID }, set: { selectedAlbumID = $0 })
+    }
+
+    /// Routes the density picker through `setDensity` so the change is persisted in
+    /// one place, whether it came from the menu or from a pinch.
+    private var densityBinding: Binding<GalleryDensity> {
+        Binding(
+            get: { density },
+            set: { next in
+                Haptics.selection()
+                setDensity(next)
+            }
+        )
     }
 
     /// Dismissing the dialog without choosing anything means "keep the originals".
@@ -566,8 +659,7 @@ struct VaultView: View {
     // MARK: - Album actions
 
     private func createAlbum() {
-        let name = newAlbumName.trimmingCharacters(in: .whitespaces)
-        guard !name.isBlank else { return }
+        guard let name = AlbumEditor.validatedName(newAlbumName) else { return }
         let album = VaultAlbum(name: name)
         context.insert(album)
         do {
@@ -582,10 +674,20 @@ struct VaultView: View {
         showingNewAlbum = false
     }
 
+    /// Adds the selection to `album`. Additive rather than move: an item can be in
+    /// several albums, and filing a photo somewhere new must not quietly pull it out
+    /// of the album it was already in.
     private func moveSelection(to album: VaultAlbum) {
         let items = selectedMedia
         guard !items.isEmpty else { return }
-        for item in items { item.album = album }
+        guard AlbumEditor.add(items, to: album) else {
+            alertItem = VaultAlert(
+                title: "Already in \(album.name)",
+                message: "Every selected item is already in that album."
+            )
+            clearSelection()
+            return
+        }
         context.saveReporting { message in
             alertItem = VaultAlert(title: "Album not updated", message: message, isError: true)
         }
@@ -593,10 +695,12 @@ struct VaultView: View {
         clearSelection()
     }
 
+    /// Removes the selection from the album currently shown in the filter. The items
+    /// stay in the vault and keep any other album labels they carry.
     private func removeSelectionFromAlbum() {
         let items = selectedMedia
-        guard !items.isEmpty else { return }
-        for item in items { item.album = nil }
+        guard let album = selectedAlbum, !items.isEmpty else { return }
+        AlbumEditor.remove(items, from: album)
         context.saveReporting { message in
             alertItem = VaultAlert(title: "Album not updated", message: message, isError: true)
         }
@@ -625,6 +729,11 @@ struct VaultView: View {
         for item in items {
             item.isInTrash = true
             item.trashedAt = Date()
+            // The label is dropped so the album stops counting an item that is on its
+            // way out. The encrypted file is untouched — Recently Deleted still owns
+            // it — and purging from there removes it for good.
+            item.albumIDs.removeAll()
+            item.album = nil
         }
         context.saveReporting { message in
             alertItem = VaultAlert(title: "Items not deleted", message: message, isError: true)
