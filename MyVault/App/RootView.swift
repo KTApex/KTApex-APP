@@ -15,6 +15,29 @@ struct RootView: View {
             guard let id = note.object as? String else { return }
             appState.openSpecialDay(id: id)
         }
+        // Intent: lock immediately. Applied unconditionally — locking only ever removes
+        // access, so it is safe even while the app is locked already.
+        .onReceive(NotificationCenter.default.publisher(for: MyVaultIntentNotifications.lockVault)) { _ in
+            appState.lock()
+        }
+        // Intent: navigate to a tab. Ignored while locked, because switching tabs behind
+        // the lock screen would be invisible at best and confusing at worst; the user
+        // unlocks first and the tab is then already where they asked.
+        .onReceive(NotificationCenter.default.publisher(for: MyVaultIntentNotifications.openTab)) { note in
+            guard appState.isUnlocked,
+                  let raw = note.object as? String,
+                  let tab = AppTab.fromIntentIdentifier(raw) else { return }
+            appState.selectedTab = tab
+        }
+        // Intent: open Backup & Restore, which lives inside Settings. Same rule as the
+        // document-open flow: only while unlocked, so a shortcut can never present vault
+        // controls before authentication. The screen is reached by navigating to the
+        // Settings tab rather than by injecting a new navigation flag, which would add
+        // state to every Settings render for one entry point.
+        .onReceive(NotificationCenter.default.publisher(for: MyVaultIntentNotifications.openBackup)) { _ in
+            guard appState.isUnlocked else { return }
+            appState.selectedTab = .settings
+        }
         // A backup the user opened from Files. Presented only from here, and only once
         // the vault is unlocked, so a document open can never skip the lock screen.
         // `item:` keeps the request alive for the lifetime of the sheet and clears it
