@@ -226,11 +226,13 @@ final class AlbumEditorTests: XCTestCase {
             [VaultAlbum(name: "apple"), VaultAlbum(name: "Apple"), VaultAlbum(name: "zebra")]
         ]
         for albums in collections {
-            let sorted = AlbumEditor.sorted(albums).map(\.name.lowercased())
+            let sorted = AlbumEditor.sorted(albums).map { $0.name.lowercased() }
             XCTAssertEqual(sorted.first, "apple")
             XCTAssertEqual(sorted.last, "zebra")
             // Case-only duplicates must be adjacent, not spread through the list.
-            XCTAssertEqual(sorted.filter { $0 == "apple" }.count, sorted.prefix(2).filter { $0 == "apple" }.count)
+            let all = sorted.filter { $0 == "apple" }.count
+            let leading = sorted.prefix(2).filter { $0 == "apple" }.count
+            XCTAssertEqual(all, leading)
         }
     }
 
