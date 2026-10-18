@@ -72,16 +72,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return launchURL
     }
 
-    /// Extracts a document URL from launch options, ignoring anything that is not a
-    /// `.mvbackup` so a stray URL cannot push arbitrary files into the importer.
+    /// Extracts a document URL from launch options.
     ///
-    /// A document open at cold launch arrives under the URL launch option
-    /// (`UIApplicationLaunchOptionsURLKey`), which Swift exposes only as a raw string.
+    /// No extension filter here: the same reasoning as `onOpenURL` applies — a renamed
+    /// backup is still a valid backup, and `PortableBackupService.inspect` rejects
+    /// anything that is not one. Routing is consistent between cold launch and the
+    /// running app, which previously differed.
     private static func backupURL(from launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> URL? {
         let key = UIApplication.LaunchOptionsKey(rawValue: "UIApplicationLaunchOptionsURLKey")
-        guard let candidate = launchOptions?[key] as? URL,
-              MyVaultBackupType.looksLikeBackup(candidate) else { return nil }
-        return candidate
+        return launchOptions?[key] as? URL
     }
 }
 

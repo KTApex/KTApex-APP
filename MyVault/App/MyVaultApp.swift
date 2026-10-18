@@ -54,7 +54,12 @@ struct MyVaultApp: App {
                 // with the AppDelegate method: whichever the system uses, both end up
                 // at `appState.openBackupDocument(at:)`.
                 .onOpenURL { url in
-                    guard MyVaultBackupType.looksLikeBackup(url) else { return }
+                    // Accepted by content, not by name. A backup that passed through a
+                    // chat app or a provider can arrive without its extension, and
+                    // `PortableBackupService.inspect` validates the magic bytes and
+                    // version before anything else happens — so dropping the file here
+                    // on the extension alone would refuse a perfectly good backup while
+                    // still being safe against non-backups.
                     appState.openBackupDocument(at: url)
                 }
                 // The AppDelegate method is still required, because when the app is not

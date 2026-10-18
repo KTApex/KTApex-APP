@@ -11,7 +11,15 @@ import UniformTypeIdentifiers
 /// drift apart.
 extension UTType {
     /// `com.ktapex.myvault.backup` — "MyVault Backup", extension `mvbackup`.
-    static let myVaultBackup = UTType(exportedAs: MyVaultBackupType.identifier)
+    ///
+    /// The `conformingTo: .data` argument must match `UTTypeConformsTo` in the plist.
+    /// Declaring the parent in both places keeps the Swift type and the system's view of
+    /// it identical; if they diverge, `UTType.myVaultBackup` can be resolvable while the
+    /// file is not treated as data, which breaks matching in the picker.
+    static let myVaultBackup = UTType(
+        exportedAs: MyVaultBackupType.identifier,
+        conformingTo: .data
+    )
 
     /// The raw identifier, for the plist and for predicates.
     static var myVaultBackupIdentifier: String { MyVaultBackupType.identifier }

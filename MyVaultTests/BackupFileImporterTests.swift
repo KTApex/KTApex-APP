@@ -56,6 +56,54 @@ final class BackupFileImporterTests: XCTestCase {
         )
     }
 
+    /// The declaration that actually makes Files hand the file to MyVault.
+    ///
+    /// A correct UTI is not sufficient on its own: without
+    /// `LSSupportsOpeningDocumentsInPlace` the system treats the app as non-document, so
+    /// iOS never offers it and never delivers the URL — which is exactly the reported
+    /// symptom of Copy / Share / Quick Look appearing but MyVault not being an option.
+    /// This test exists so the key cannot be dropped again.
+    func testDocumentOpeningInPlaceIsDeclared() throws {
+        let plist = try XCTUnwrap(Bundle(for: PortableBackupService.self).infoDictionary)
+        XCTAssertEqual(
+            plist["LSSupportsOpeningDocumentsInPlace"] as? Bool,
+            true,
+            "without LSSupportsOpeningDocumentsInPlace iOS will not hand .mvbackup to MyVault"
+        )
+    }
+
+    /// The document-type entry must claim the app's own UTI and use a role appropriate
+    /// to a format the app both reads and writes. `Viewer` describes an app that only
+    /// displays a type, which is wrong for an owned, read-write format.
+    func testDocumentTypeClaimsTheBackupTypeAsEditor() throws {
+        let plist = try XCTUnwrap(Bundle(for: PortableBackupService.self).infoDictionary)
+        let types = try XCTUnwrap(
+            plist["CFBundleDocumentTypes"] as? [[String: Any]],
+            "CFBundleDocumentTypes must be declared"
+        )
+        let backupEntry = try XCTUnwrap(
+            types.first { entry in
+                let contents = entry["LSItemContentTypes"] as? [String] ?? []
+                return contents.contains(MyVaultBackupType.identifier)
+            },
+            "no CFBundleDocumentTypes entry claims \(MyVaultBackupType.identifier)"
+        )
+        XCTAssertEqual(backupEntry["CFBundleTypeRole"] as? String, "Editor")
+        XCTAssertEqual(backupEntry["LSHandlerRank"] as? String, "Owner")
+    }
+
+    /// The exported type's parent must match what the Swift type declares, or the
+    /// system and the app disagree about whether the file is data.
+    func testExportedTypeConformsToDataInBothPlaces() throws {
+        let plist = try XCTUnwrap(Bundle(for: PortableBackupService.self).infoDictionary)
+        let declared = try XCTUnwrap(plist["UTExportedTypeDeclarations"] as? [[String: Any]])
+        let conforms = declared
+            .compactMap { $0["UTTypeConformsTo"] as? [String] }
+            .flatMap { $0 }
+        XCTAssertTrue(conforms.contains("public.data"), "plist must declare public.data conformance")
+        XCTAssertTrue(UTType.myVaultBackup.conforms(to: .data), "Swift type must conform to .data too")
+    }
+
     /// The app's own type must be offered to the picker, with `.data` only as a
     /// fallback for a backup whose extension was lost in transit.
     func testImporterAcceptsTheBackupTypeAndPlainData() {

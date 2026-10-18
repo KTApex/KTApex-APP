@@ -22,6 +22,16 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <!-- Lets iOS hand MyVault a file that lives in another app's storage (Files,
+         iCloud Drive, a provider). Without this key the system treats MyVault as a
+         non-document app: Files shows Copy / Share / Quick Look for the backup but
+         never offers MyVault, and `application(_:open:)` is never delivered. -->
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <!-- Exposes MyVault's Documents folder in the Files app, which is where a backup
+         the user saves with "Save to Files" is most likely to land. -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
     <key>NSFaceIDUsageDescription</key>
     <string>MyVault uses Face ID to securely unlock your private vault.</string>
     <key>NSPhotoLibraryUsageDescription</key>
@@ -93,8 +103,12 @@
         <dict>
             <key>CFBundleTypeName</key>
             <string>MyVault Backup</string>
+            <!-- Editor, not Viewer: MyVault is the only app that can read this format,
+                 and it both opens and writes it. "Viewer" tells iOS the app merely
+                 displays the type, which weakens the association for a format the app
+                 owns. -->
             <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
+            <string>Editor</string>
             <key>LSHandlerRank</key>
             <string>Owner</string>
             <key>LSItemContentTypes</key>
