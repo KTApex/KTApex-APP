@@ -130,4 +130,3 @@ final class MyVaultUITests: XCTestCase {
         settingsTab.tap()
     }
 }
-}
