@@ -110,8 +110,9 @@ final class AlbumBackupCompatibilityTests: XCTestCase {
         XCTAssertTrue(model.belongs(to: holiday))
         XCTAssertTrue(model.belongs(to: family))
         XCTAssertEqual(model.albumIDs, ["a1", "a2"])
-        XCTAssertEqual(holiday.itemCount, 1)
-        XCTAssertEqual(family.itemCount, 1)
+        XCTAssertEqual(holiday.itemCount(in: [model]), 1)
+        XCTAssertEqual(family.itemCount(in: [model]), 1,
+                       "an album joined second must still count the item")
     }
 
     func testUnknownAlbumIDsAreDroppedOnRestore() throws {

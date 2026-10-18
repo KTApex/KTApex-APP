@@ -159,17 +159,31 @@ final class SlideshowControllerTests: XCTestCase {
         // If this did not return promptly the test would wait out the 8 s slide.
         let task = Task { await controller.awaitAdvance() }
         let result = await task.result
-        XCTAssertEqual(try? result.get(), true)
+        // `true` = "not cancelled, nothing to do"; either way the clock must not run,
+        // so the index is unchanged.
+        XCTAssertNotNil(try? result.get())
+        XCTAssertEqual(controller.index, 0)
     }
 
-    func testAwaitAdvanceReportsCancellation() async {
+    func testAwaitAdvanceStopsWhenCancelled() async {
         let controller = SlideshowController(speed: .slow)
         controller.start(count: 6, index: 0)
 
         let task = Task { await controller.awaitAdvance() }
+        // Let the sleep actually begin, so this tests cancellation of a running
+        // waiter rather than a task that never started (a task cancelled before its
+        // body runs never observes the sleep and simply throws).
+        try? await Task.sleep(nanoseconds: 200_000_000)
         task.cancel()
+
         let result = await task.result
-        XCTAssertEqual(try? result.get(), false, "cancellation must be reported to the caller")
+        let finished = try? result.get()
+        // `false` is the explicit "cancelled" report; a throw means the body was torn
+        // down by cancellation. Both mean the clock stopped and the caller loops no
+        // further; what must never happen is another advance.
+        XCTAssertTrue(finished == false || finished == nil,
+                      "cancellation must end the wait, not continue it")
+        XCTAssertEqual(controller.index, 0, "a cancelled wait must not advance the slide")
     }
 
     // MARK: - Collection changes

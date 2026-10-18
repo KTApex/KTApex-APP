@@ -125,15 +125,21 @@ enum AlbumEditor {
 
     // MARK: - Ordering
 
-    /// Album list order. Case- and diacritic-insensitive so "apple" and "Apple" sit
-    /// together, with the stable ID as a tie-break for two albums sharing a name.
+    /// Album list order. Case- and diacritic-insensitive, with the stable ID as the
+    /// final tie-break.
+    ///
+    /// `localizedStandardCompare` alone is not enough: for names that differ only by
+    /// case ("Apple" / "apple") the result is left to the locale, and on some locales
+    /// it *inverts* under case folding, so the two would swap places between runs.
+    /// Comparing the folded (lowercased, diacritic-insensitive) names first makes the
+    /// order deterministic, and the ID keeps two truly identical names stable.
     static func sorted(_ albums: [VaultAlbum]) -> [VaultAlbum] {
         albums.sorted { lhs, rhs in
-            switch lhs.name.localizedStandardCompare(rhs.name) {
-            case .orderedAscending: return true
-            case .orderedDescending: return false
-            case .orderedSame: return lhs.id < rhs.id
-            }
+            let left = GalleryComposer.folded(lhs.name)
+            let right = GalleryComposer.folded(rhs.name)
+            let comparison = left.localizedStandardCompare(right)
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            return lhs.id < rhs.id
         }
     }
 }

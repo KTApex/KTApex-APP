@@ -72,7 +72,7 @@ struct AlbumDetailView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
-        .navigationTitle("\(album.name) (\(items.count))")
+        .navigationTitle(items.isEmpty ? album.name : "\(album.name) (\(items.count))")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         // A full-screen viewer, matching the vault: a sheet would let the album

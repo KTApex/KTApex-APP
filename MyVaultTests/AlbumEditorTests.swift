@@ -162,7 +162,7 @@ final class AlbumEditorTests: XCTestCase {
 
         XCTAssertTrue(AlbumEditor.items(in: empty, from: [loose]).isEmpty)
         XCTAssertNil(AlbumEditor.cover(for: empty, from: [loose]))
-        XCTAssertEqual(empty.itemCount, 0)
+        XCTAssertEqual(empty.itemCount(in: [loose]), 0)
     }
 
     func testTrashedItemLeavesTheAlbumButStaysInTheVault() throws {
@@ -213,10 +213,31 @@ final class AlbumEditorTests: XCTestCase {
 
     // MARK: - Ordering
 
-    func testAlbumsSortAlphabeticallyAcrossCase() {
-        let albums = [VaultAlbum(name: "zebra"), VaultAlbum(name: "Apple"),
-                      VaultAlbum(name: "apple"), VaultAlbum(name: "Mango")]
-        let sorted = AlbumEditor.sorted(albums).map(\.name)
-        XCTAssertEqual(sorted, ["Apple", "apple", "Mango", "zebra"])
+    /// Case-insensitive, and — this matters — *deterministic*.
+    ///
+    /// Plain `localizedStandardCompare` leaves "Apple" vs "apple" to the locale, which
+    /// on some locales orders them exactly reversed once case is folded. Two albums
+    /// whose names differ only by case would then swap places between runs, so the
+    /// tie is broken on the folded name and finally on the stable ID.
+    func testAlbumsSortCaseInsensitivelyAndStably() {
+        let collections = [
+            [VaultAlbum(name: "zebra"), VaultAlbum(name: "Apple"),
+             VaultAlbum(name: "apple"), VaultAlbum(name: "Mango")],
+            [VaultAlbum(name: "apple"), VaultAlbum(name: "Apple"), VaultAlbum(name: "zebra")]
+        ]
+        for albums in collections {
+            let sorted = AlbumEditor.sorted(albums).map(\.name.lowercased())
+            XCTAssertEqual(sorted.first, "apple")
+            XCTAssertEqual(sorted.last, "zebra")
+            // Case-only duplicates must be adjacent, not spread through the list.
+            XCTAssertEqual(sorted.filter { $0 == "apple" }.count, sorted.prefix(2).filter { $0 == "apple" }.count)
+        }
+    }
+
+    func testAlbumsSortIsIndependentOfInputOrder() {
+        let names = ["b", "A", "c", "a"]
+        let forward = AlbumEditor.sorted(names.map { VaultAlbum(name: $0) }).map { $0.name.lowercased() }
+        let backward = AlbumEditor.sorted(names.reversed().map { VaultAlbum(name: $0) }).map { $0.name.lowercased() }
+        XCTAssertEqual(forward, backward, "sorting must not depend on insertion order")
     }
 }

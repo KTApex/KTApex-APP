@@ -19,9 +19,22 @@ final class VaultAlbum {
     var coverMediaID: String?
     @Relationship(deleteRule: .nullify, inverse: \VaultMedia.album) var media: [VaultMedia] = []
     init(name: String) { self.name = name }
-    /// Items still in the vault. Trashed items are not counted, so an album never
-    /// claims content the user has already deleted.
-    var itemCount: Int { media.filter { $0.isInTrash == false }.count }
+
+    /// Items still in the vault that carry this album.
+    ///
+    /// Counts the membership IDs rather than `media`. `media` follows the primary
+    /// (to-one) relationship, so an item that joined this album *second* would not
+    /// appear in it — the album would claim "0 items" while its grid showed the
+    /// photo. Trashed items are excluded so an album never counts content the user
+    /// has already deleted.
+    ///
+    /// Pass the library in when it is already on screen. The fallback reads the
+    /// relationship, which is complete for the common case of one album per item and
+    /// is what the older, non-list screens use.
+    func itemCount(in library: [VaultMedia]) -> Int {
+        guard !library.isEmpty else { return self.media.filter { !$0.isInTrash }.count }
+        return library.filter { !$0.isInTrash && $0.belongs(to: self) }.count
+    }
 }
 
 @Model

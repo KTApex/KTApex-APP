@@ -55,6 +55,8 @@ final class StorageServiceTests: XCTestCase {
         let a = media(type: "photo", size: 1)
         let b = media(type: "photo", size: 1, trash: true)
         album.media = [a, b]
-        XCTAssertEqual(album.itemCount, 1)
+        // Counted from the relationship here, because no library is supplied: this is
+        // the path the older screens use.
+        XCTAssertEqual(album.itemCount(in: []), 1)
     }
 }

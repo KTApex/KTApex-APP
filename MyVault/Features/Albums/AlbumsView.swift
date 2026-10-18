@@ -42,7 +42,7 @@ struct AlbumsView: View {
         switch sort {
         case .name: list.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         case .newest: list.sort { $0.createdAt > $1.createdAt }
-        case .itemCount: list.sort { $0.itemCount > $1.itemCount }
+        case .itemCount: list.sort { $0.itemCount(in: liveMedia) > $1.itemCount(in: liveMedia) }
         }
         return list
     }
@@ -61,7 +61,7 @@ struct AlbumsView: View {
                 MVEmptyState(
                     symbol: "magnifyingglass",
                     title: "No matching albums",
-                    subtitle: "No album name contains â€œ\(searchText)â€.",
+                    subtitle: "No album name contains ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“\(searchText)ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â.",
                     actionTitle: "Clear Search",
                     action: { searchText = "" }
                 )
@@ -114,7 +114,7 @@ struct AlbumsView: View {
             Button("Cancel", role: .cancel) { renaming = nil }
         }
         .confirmationDialog(
-            "Delete â€œ\(deleting?.name ?? "")â€?",
+            "Delete ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“\(deleting?.name ?? "")ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â?",
             isPresented: deleteBinding,
             titleVisibility: .visible,
             presenting: deleting
@@ -122,7 +122,8 @@ struct AlbumsView: View {
             Button("Delete Album", role: .destructive) { delete(album) }
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: { album in
-            Text("The \(album.itemCount) item\(album.itemCount == 1 ? "" : "s") in this album stay in your vault â€” only the album is removed.")
+            let count = album.itemCount(in: liveMedia)
+            Text("The \(count) item\(count == 1 ? "" : "s") in this album stay in your vault - only the album is removed.")
         }
         .alert("Album not saved", isPresented: alertBinding) {
             Button("OK", role: .cancel) { alertMessage = nil }
@@ -236,12 +237,12 @@ struct AlbumCard: View {
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: MVRadius.m, style: .continuous))
             Text(album.name).font(MVFont.headline).lineLimit(1)
-            Text("\(album.itemCount) \(album.itemCount == 1 ? "item" : "items")")
+            Text("\(album.itemCount(in: allMedia)) \(album.itemCount(in: allMedia) == 1 ? "item" : "items")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(album.name), \(album.itemCount) items")
+        .accessibilityLabel("\(album.name), \(album.itemCount(in: allMedia)) items")
     }
 }
 
@@ -273,7 +274,7 @@ struct AlbumRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.name).font(MVFont.headline).lineLimit(1)
-                Text("\(album.itemCount) \(album.itemCount == 1 ? "item" : "items")")
+                Text("\(count) \(count == 1 ? "item" : "items")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -281,8 +282,12 @@ struct AlbumRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(album.name), \(album.itemCount) items")
+        .accessibilityLabel("\(album.name), \(count) items")
     }
+
+    /// Counted against the live library when available, so an item filed into this
+    /// album second still counts.
+    private var count: Int { album.itemCount(in: library) }
 }
 
 
