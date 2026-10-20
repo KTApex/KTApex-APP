@@ -68,6 +68,24 @@ final class MediaHandlingTests: XCTestCase {
         XCTAssertNil(MediaSniff.sniff(Data([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79])))
     }
 
+    func testPDFIsDetectedAsDocument() throws {
+        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 200, height: 300))
+        let pdfData = renderer.pdfData { ctx in
+            ctx.beginPage()
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 20, y: 20, width: 40, height: 40))
+        }
+        let sniff = try XCTUnwrap(MediaSniff.sniff(pdfData))
+        XCTAssertEqual(sniff.kind, .image)
+        XCTAssertEqual(sniff.fileExtension, "pdf")
+        XCTAssertTrue(MediaSniff.isPDF(pdfData))
+    }
+
+    func testFakePDFHeaderWithoutValidDocumentIsRejected() {
+        let fakePDF = Data("%PDF-1.7\ngarbage-not-a-pdf".utf8)
+        XCTAssertNil(MediaSniff.sniff(fakePDF))
+    }
+
     // MARK: - File names
 
     func testStemRemovesPathSeparatorsAndColons() {

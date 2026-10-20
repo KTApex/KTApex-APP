@@ -104,6 +104,9 @@ final class ThumbnailCache {
 
     private nonisolated static func renderImageThumbnail(_ request: RenderRequest) async -> UIImage? {
         guard let data = try? VaultStorageService.shared.loadDecrypted(fileName: request.fileName) else { return nil }
+        if MediaSniff.isPDF(data), let pdfThumb = renderPDFThumbnail(data, maxPixelSize: request.pixelSize) {
+            return pdfThumb
+        }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         let options: [CFString: Any] = [
@@ -118,6 +121,26 @@ final class ThumbnailCache {
         // Formats ImageIO will decode but not down-sample fall back to a plain decode.
         guard let image = UIImage(data: data) else { return nil }
         return image.preparingThumbnail(of: CGSize(width: request.pixelSize, height: request.pixelSize))
+    }
+
+    private nonisolated static func renderPDFThumbnail(_ data: Data, maxPixelSize: CGFloat) -> UIImage? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider),
+              let page = doc.page(at: 1) else { return nil }
+        let pageRect = page.getBoxRect(.mediaBox)
+        guard pageRect.width > 0, pageRect.height > 0 else { return nil }
+        let scale = min(maxPixelSize / pageRect.width, maxPixelSize / pageRect.height)
+        let targetSize = CGSize(width: max(pageRect.width * scale, 1), height: max(pageRect.height * scale, 1))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: targetSize))
+            ctx.cgContext.translateBy(x: 0, y: targetSize.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            ctx.cgContext.drawPDFPage(page)
+        }
     }
 
     private nonisolated static func renderVideoThumbnail(_ request: RenderRequest) async -> UIImage? {

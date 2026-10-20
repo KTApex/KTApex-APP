@@ -20,6 +20,16 @@ struct GalleryGrid: View {
     let onToggleSelection: (VaultMedia) -> Void
     /// Called when a pinch changes density, so the owner can persist it.
     var onDensityChange: ((GalleryDensity) -> Void)? = nil
+    /// Whether tiles preserve their original aspect ratio ("Aspect Ratio Grid") vs uniform squares ("Square Photo Grid").
+    var useAspectRatioTiles: Bool = false
+    /// Toggles selection for an entire date section at once (iPhone Photos "Select" in section header).
+    var onToggleSectionSelection: ((GallerySection) -> Void)? = nil
+    /// Context-menu quick actions on individual tiles.
+    var onToggleFavorite: ((VaultMedia) -> Void)? = nil
+    var onShareItem: ((VaultMedia) -> Void)? = nil
+    var onTrashItem: ((VaultMedia) -> Void)? = nil
+    /// Summary text rendered at the bottom of the scroll view, matching Apple Photos.
+    var footerSummary: String? = nil
 
     @Environment(\.displayScale) private var displayScale
 
@@ -57,14 +67,29 @@ struct GalleryGrid: View {
                 selection: $selection,
                 displayScale: displayScale,
                 measuredWidth: measuredWidth,
+                useAspectRatioTiles: useAspectRatioTiles,
                 onOpen: onOpen,
-                onToggleSelection: onToggleSelection
+                onToggleSelection: onToggleSelection,
+                onToggleSectionSelection: onToggleSectionSelection,
+                onToggleFavorite: onToggleFavorite,
+                onShareItem: onShareItem,
+                onTrashItem: onTrashItem
             )
-            // Trailing room at the end of the scroll only. Group separation is done by
-            // the header's own top padding, so no per-section footer is needed — a
-            // section footer in `LazyVGrid` occupies a full grid row and would have
-            // doubled the gap and pushed the last row away from the tab bar.
-            .padding(.bottom, Self.sectionSpacing)
+            if let footerSummary {
+                VStack(spacing: 4) {
+                    Text(footerSummary)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Encrypted on this device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 20)
+                .padding(.bottom, 76)
+            } else {
+                Color.clear.frame(height: Self.sectionSpacing)
+            }
         }
         .background {
             GeometryReader { proxy in
@@ -111,8 +136,13 @@ private struct LazyVGridLayout: View {
     @Binding var selection: Set<String>
     let displayScale: CGFloat
     let measuredWidth: CGFloat
+    let useAspectRatioTiles: Bool
     let onOpen: (VaultMedia) -> Void
     let onToggleSelection: (VaultMedia) -> Void
+    let onToggleSectionSelection: ((GallerySection) -> Void)?
+    let onToggleFavorite: ((VaultMedia) -> Void)?
+    let onShareItem: ((VaultMedia) -> Void)?
+    let onTrashItem: ((VaultMedia) -> Void)?
 
     private var columnCount: Int {
         density.columns(forWidth: measuredWidth)
@@ -151,6 +181,7 @@ private struct LazyVGridLayout: View {
                             isSelecting: isSelecting,
                             isSelected: selection.contains(item.id),
                             showsAlbumBadge: !item.albumIdentifiers.isEmpty,
+                            useAspectRatio: useAspectRatioTiles,
                             pixelSize: tilePixels,
                             onTap: {
                                 if isSelecting {
@@ -158,11 +189,19 @@ private struct LazyVGridLayout: View {
                                 } else {
                                     onOpen(item)
                                 }
-                            }
+                            },
+                            onSelectItem: { onToggleSelection(item) },
+                            onToggleFavorite: onToggleFavorite.map { fn in { fn(item) } },
+                            onShareItem: onShareItem.map { fn in { fn(item) } },
+                            onTrashItem: onTrashItem.map { fn in { fn(item) } }
                         )
                     }
                 } header: {
-                    GallerySectionHeader(section: section)
+                    GallerySectionHeader(
+                        section: section,
+                        allSelected: !section.items.isEmpty && section.items.allSatisfy { selection.contains($0.id) },
+                        onToggleSection: onToggleSectionSelection.map { fn in { fn(section) } }
+                    )
                 }
             }
         }
@@ -171,28 +210,39 @@ private struct LazyVGridLayout: View {
 
 struct GallerySectionHeader: View {
     let section: GallerySection
+    var allSelected: Bool = false
+    var onToggleSection: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(section.title)
-                .font(.subheadline.weight(.semibold))
-            if let subtitle = section.subtitle {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(section.title)
+                    .font(.headline.weight(.bold))
+                if let subtitle = section.subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            if let onToggleSection {
+                Button(action: onToggleSection) {
+                    Text(allSelected ? "Deselect" : "Select")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(allSelected ? "Deselect \(section.title)" : "Select \(section.title)")
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 10)
+        .padding(.top, 12)
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Pinned headers sit on top of moving thumbnails, so the background must be
-        // fully opaque: a translucent material lets the grid show through the title.
-        // No divider: a native photo gallery groups by type scale and whitespace, and
-        // a rule across the width makes the header read as a separate bar.
-        .background(MVColor.galleryBackground)
-        .accessibilityElement(children: .combine)
+        .background(MVColor.galleryBackground.opacity(0.95))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -234,9 +284,14 @@ struct GalleryThumbCell: View {
     let isSelecting: Bool
     let isSelected: Bool
     let showsAlbumBadge: Bool
+    var useAspectRatio: Bool = false
     /// Thumbnail size requested from the cache, matched to the tile's drawn size.
     var pixelSize: CGFloat = 400
     let onTap: () -> Void
+    var onSelectItem: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
+    var onShareItem: (() -> Void)? = nil
+    var onTrashItem: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: UIImage?
@@ -245,12 +300,20 @@ struct GalleryThumbCell: View {
     var body: some View {
         Button(action: onTap) {
             ZStack {
-                Rectangle().fill(Color(.secondarySystemFill))
+                Rectangle().fill(useAspectRatio ? Color.clear : Color(.secondarySystemFill))
                 if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .transition(reduceMotion ? .identity : .opacity)
+                    if useAspectRatio {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: MVRadius.s, style: .continuous))
+                            .transition(reduceMotion ? .identity : .opacity)
+                    } else {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .transition(reduceMotion ? .identity : .opacity)
+                    }
                 } else {
                     placeholder
                 }
@@ -275,6 +338,37 @@ struct GalleryThumbCell: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if !isSelecting {
+                Button(action: onTap) {
+                    Label("View", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                if let onToggleFavorite {
+                    Button(action: onToggleFavorite) {
+                        Label(
+                            item.isFavorite ? "Unfavorite" : "Favorite",
+                            systemImage: item.isFavorite ? "heart.slash" : "heart"
+                        )
+                    }
+                }
+                if let onShareItem {
+                    Button(action: onShareItem) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                }
+                if let onSelectItem {
+                    Button(action: onSelectItem) {
+                        Label("Select", systemImage: "checkmark.circle")
+                    }
+                }
+                if let onTrashItem {
+                    Divider()
+                    Button(role: .destructive, action: onTrashItem) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: image != nil)
         .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
         .accessibilityLabel(accessibilityLabel)
@@ -325,6 +419,14 @@ struct GalleryThumbCell: View {
             Text(Self.durationText(item.duration))
                 .font(.caption2.weight(.semibold))
                 .monospacedDigit()
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.55), in: Capsule())
+                .padding(4)
+        } else if item.isDocument {
+            Text("PDF")
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)

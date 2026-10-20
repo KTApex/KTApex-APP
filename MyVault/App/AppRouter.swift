@@ -28,9 +28,15 @@ struct PendingBackupOpen: Identifiable, Equatable {
 final class AppState: ObservableObject {
     @Published var selectedTab: AppTab = .home
     @Published var isUnlocked = false
+    /// True when the vault was unlocked via the secondary Decoy (Duress) PIN.
+    /// Real vault media, albums, special days, and private notes remain hidden until
+    /// the vault is locked and re-unlocked with the primary PIN or biometrics.
+    @Published var isDecoyMode = false
     @Published var onboardingCompleted: Bool = UserDefaults.standard.bool(forKey: "mv.onboardingCompleted")
     @Published var navigationPath = NavigationPath()
     @Published var deepLinkedSpecialDayID: String?
+    @Published var openAlbumsRequested = false
+    @Published var openNotesRequested = false
     /// A backup the user asked to open from Files. `RootView` observes this and
     /// presents the import screen once the app is unlocked, so a document open never
     /// skips authentication.
@@ -105,6 +111,7 @@ final class AppState: ObservableObject {
         guard AppSettingsStore.biometricUnlockAllowed else { return }
         do {
             let ok = try await authService.authenticate(reason: "Unlock MyVault")
+            if ok { isDecoyMode = false }
             isUnlocked = ok
         } catch { isUnlocked = false }
     }
@@ -116,6 +123,16 @@ final class AppState: ObservableObject {
     func openSpecialDay(id: String) {
         deepLinkedSpecialDayID = id
         selectedTab = .specialDays
+    }
+
+    func openAlbums() {
+        openAlbumsRequested = true
+        selectedTab = .vault
+    }
+
+    func openNotes() {
+        openNotesRequested = true
+        selectedTab = .vault
     }
 
     /// Handles a backup the system asked MyVault to open (Files, AirDrop, another app).
@@ -154,6 +171,7 @@ final class AppState: ObservableObject {
     /// plaintext image data lingers after the app is backgrounded/locked.
     func lock() {
         isUnlocked = false
+        isDecoyMode = false
         ThumbnailCache.shared.clear()
         backgroundedAt = nil
     }

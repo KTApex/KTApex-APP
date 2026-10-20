@@ -8,6 +8,7 @@ import SwiftData
 /// an album detaches its items and leaves every vault file exactly where it was.
 struct AlbumsView: View {
     @Environment(\.modelContext) private var context
+    @EnvironmentObject private var appState: AppState
     @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
     @Query(sort: \VaultMedia.createdAt, order: .reverse) private var liveMedia: [VaultMedia]
 
@@ -35,12 +36,13 @@ struct AlbumsView: View {
     @State private var alertMessage: String?
 
     private var visibleAlbums: [VaultAlbum] {
+        guard !appState.isDecoyMode else { return [] }
         var list = albums
         if !searchText.isBlank {
             list = list.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
         switch sort {
-        case .name: list.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .name: list = AlbumEditor.sorted(list)
         case .newest: list.sort { $0.createdAt > $1.createdAt }
         case .itemCount: list.sort { $0.itemCount(in: liveMedia) > $1.itemCount(in: liveMedia) }
         }
@@ -49,7 +51,7 @@ struct AlbumsView: View {
 
     var body: some View {
         Group {
-            if albums.isEmpty {
+            if appState.isDecoyMode || albums.isEmpty {
                 MVEmptyState(
                     symbol: "rectangle.stack",
                     title: "No albums yet",
@@ -61,7 +63,7 @@ struct AlbumsView: View {
                 MVEmptyState(
                     symbol: "magnifyingglass",
                     title: "No matching albums",
-                    subtitle: "No album name contains ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“\(searchText)ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â.",
+                    subtitle: "No album name contains “\(searchText)”.",
                     actionTitle: "Clear Search",
                     action: { searchText = "" }
                 )
@@ -114,7 +116,7 @@ struct AlbumsView: View {
             Button("Cancel", role: .cancel) { renaming = nil }
         }
         .confirmationDialog(
-            "Delete ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“\(deleting?.name ?? "")ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â?",
+            "Delete “\(deleting?.name ?? "")”?",
             isPresented: deleteBinding,
             titleVisibility: .visible,
             presenting: deleting
@@ -289,5 +291,3 @@ struct AlbumRow: View {
     /// album second still counts.
     private var count: Int { album.itemCount(in: library) }
 }
-
-

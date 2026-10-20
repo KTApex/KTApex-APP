@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import UniformTypeIdentifiers
 import UIKit
 
 struct HomeView: View {
@@ -13,15 +14,28 @@ struct HomeView: View {
     @StateObject private var importer = ImportCoordinator()
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showingPicker = false
+    @State private var showingCamera = false
+    @State private var showingFileImporter = false
     @State private var notice: ImportCoordinator.Notice?
+    @State private var noteCount = 0
+    @State private var securityEvents: [PINService.SecurityEvent] = []
 
     private var greeting: String {
         let h = Calendar.current.component(.hour, from: Date())
         switch h { case 0..<12: return "Good morning"; case 12..<17: return "Good afternoon"; default: return "Good evening" }
     }
 
+    private var visibleMedia: [VaultMedia] {
+        appState.isDecoyMode ? [] : media
+    }
+
+    private var visibleAlbums: [VaultAlbum] {
+        appState.isDecoyMode ? [] : albums
+    }
+
     private var nextEvent: SpecialDay? {
-        events.filter { CountdownEngine.nextOccurrence(of: $0).daysRemaining >= 0 }
+        guard !appState.isDecoyMode else { return nil }
+        return events.filter { CountdownEngine.nextOccurrence(of: $0).daysRemaining >= 0 }
             .sorted { CountdownEngine.nextOccurrence(of: $0).daysRemaining < CountdownEngine.nextOccurrence(of: $1).daysRemaining }
             .first
     }
@@ -36,14 +50,45 @@ struct HomeView: View {
                     }
                     .padding(.horizontal)
 
+                    if !appState.isDecoyMode, let latestEvent = securityEvents.first {
+                        MVCard {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: "exclamationmark.shield.fill")
+                                    .foregroundStyle(.red)
+                                    .font(.title3)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("SECURITY ALERT · \(securityEvents.count) \(securityEvents.count == 1 ? "EVENT" : "EVENTS")")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.red)
+                                    Text(latestEvent.note ?? "Failed PIN unlock attempt")
+                                        .font(MVFont.headline)
+                                    Text(latestEvent.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Dismiss") {
+                                    PINService.shared.clearSecurityEvents()
+                                    securityEvents = []
+                                    Haptics.tap()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+
                     MVCard {
                         VStack(alignment: .leading, spacing: 8) {
                             Label("PRIVATE VAULT", systemImage: "lock.shield.fill")
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
-                                Text("\(media.filter { !$0.isVideo && !$0.isInTrash }.count) Photos")
+                                Text("\(visibleMedia.filter { !$0.isVideo && !$0.isInTrash }.count) Photos")
                                 Text("·")
-                                Text("\(media.filter { $0.isVideo && !$0.isInTrash }.count) Videos")
+                                Text("\(visibleMedia.filter { $0.isVideo && !$0.isInTrash }.count) Videos")
+                                Text("·")
+                                Text("\(appState.isDecoyMode ? 0 : noteCount) Notes")
                             }.font(MVFont.headline)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,8 +100,14 @@ struct HomeView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("NEXT SPECIAL DAY", systemImage: "heart.fill")
                                     .font(.caption).foregroundStyle(.secondary)
-                                HStack {
-                                    Image(systemName: event.type.symbol).foregroundStyle(.tint)
+                                HStack(spacing: 12) {
+                                    if let cover = event.coverMedia(in: visibleMedia) {
+                                        MediaThumbnailView(item: cover, pixelSize: 120)
+                                            .frame(width: 44, height: 44)
+                                            .clipShape(RoundedRectangle(cornerRadius: MVRadius.s, style: .continuous))
+                                    } else {
+                                        Image(systemName: event.type.symbol).foregroundStyle(.tint)
+                                    }
                                     VStack(alignment: .leading) {
                                         Text(event.title).font(MVFont.headline)
                                         Text(CountdownEngine.headline(for: event))
@@ -76,7 +127,15 @@ struct HomeView: View {
                         HStack(spacing: 12) {
                             QuickAction(symbol: "plus", title: "Add Photos") { beginImport() }
                             QuickAction(symbol: "heart", title: "Special Day") { appState.selectedTab = .specialDays }
-                            QuickAction(symbol: "folder", title: "Album") { appState.selectedTab = .vault }
+                            QuickAction(symbol: "folder", title: "Album") { appState.openAlbums() }
+                        }
+                        .padding(.horizontal)
+                        HStack(spacing: 12) {
+                            if SecureCameraPicker.isCameraAvailable {
+                                QuickAction(symbol: "camera.fill", title: "Camera") { showingCamera = true }
+                            }
+                            QuickAction(symbol: "doc.badge.plus", title: "Files") { showingFileImporter = true }
+                            QuickAction(symbol: "lock.doc.fill", title: "Notes") { appState.openNotes() }
                         }
                         .padding(.horizontal)
                         if importer.isWorking {
@@ -90,14 +149,19 @@ struct HomeView: View {
                         }
                     }
 
-                    if !albums.isEmpty {
+                    if !visibleAlbums.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Recent Albums").font(MVFont.headline).padding(.horizontal)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 12) {
-                                    ForEach(albums.prefix(10)) { album in
-                                        AlbumCard(album: album)
-                                            .frame(width: 160)
+                                    ForEach(visibleAlbums.prefix(10)) { album in
+                                        NavigationLink {
+                                            AlbumDetailView(album: album)
+                                        } label: {
+                                            AlbumCard(album: album)
+                                                .frame(width: 160)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
                                 }
                                 .padding(.horizontal)
@@ -108,7 +172,26 @@ struct HomeView: View {
                 .padding(.vertical)
             }
             .navigationTitle("Home")
+            .onAppear {
+                noteCount = appState.isDecoyMode ? 0 : SecureNoteService.shared.loadAll().count
+                securityEvents = appState.isDecoyMode ? [] : PINService.shared.securityEvents()
+            }
             .photosPicker(isPresented: $showingPicker, selection: $pickerItems, maxSelectionCount: 50, matching: .any(of: [.images, .videos]))
+            .fullScreenCover(isPresented: $showingCamera) {
+                SecureCameraPicker { payload in
+                    importer.startPayloads([payload], label: "Encrypting camera capture", context: context, album: nil)
+                }
+                .ignoresSafeArea()
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.image, .movie, .pdf],
+                allowsMultipleSelection: true
+            ) { result in
+                if case .success(let urls) = result, !urls.isEmpty {
+                    importer.startFiles(urls, context: context, album: nil)
+                }
+            }
             .onChange(of: pickerItems) { _, items in
                 guard !items.isEmpty else { return }
                 importer.start(items, context: context, album: nil)

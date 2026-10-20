@@ -432,11 +432,12 @@ struct BackupRestoreView: View {
         }
     }
 
-    /// Restored special days have to reach the widget, and cached thumbnails for
-    /// media that no longer exists must go.
+    /// Restored special days have to reach the widget and local notification
+    /// schedule, and cached thumbnails for media that no longer exists must go.
     private func refreshDependentState() {
         let events = (try? context.fetch(FetchDescriptor<SpecialDay>())) ?? []
         WidgetSummaryService.refresh(events: events)
+        Task { await NotificationService.shared.rescheduleAll(events) }
         ThumbnailCache.shared.clear()
     }
 }

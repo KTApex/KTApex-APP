@@ -91,4 +91,65 @@ final class KeychainIntegrationTests: XCTestCase {
         XCTAssertNil(KeychainService.shared.get(KeychainService.Key.pinVerifier))
         XCTAssertNil(KeychainService.shared.get(KeychainService.Key.pinSalt))
     }
+
+    func testDecoyPINVerificationAndRejectionOfSamePIN() {
+        PINService.shared.setPIN("2468")
+        XCTAssertFalse(PINService.shared.setDecoyPIN("2468"),
+                       "Decoy PIN must not be identical to the primary PIN")
+        XCTAssertTrue(PINService.shared.setDecoyPIN("9753"))
+        XCTAssertTrue(PINService.shared.isDecoyEnabled)
+
+        XCTAssertEqual(PINService.shared.verifyWithMode("2468"), .primary)
+        XCTAssertEqual(PINService.shared.verifyWithMode("9753"), .decoy)
+        XCTAssertNil(PINService.shared.verifyWithMode("0000"))
+
+        PINService.shared.disable()
+        XCTAssertFalse(PINService.shared.isDecoyEnabled)
+    }
+
+    func testSecureNoteServiceEncryptsAndDecryptsNotes() async throws {
+        await KeychainService.shared.ensureVaultKeyExists()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MyVaultNoteTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let service = SecureNoteService(directory: scratch)
+        let note = SecureNote(title: "Secret Journal", body: "Private thought", isPinned: true)
+        try service.save(note)
+
+        let files = try FileManager.default.contentsOfDirectory(at: scratch, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        let rawBytes = try Data(contentsOf: files[0])
+        XCTAssertFalse(String(data: rawBytes, encoding: .utf8)?.contains("Secret Journal") ?? false,
+                       "Note title and body must be encrypted at rest on disk")
+
+        let loaded = service.loadAll()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.title, "Secret Journal")
+        XCTAssertEqual(loaded.first?.body, "Private thought")
+        XCTAssertTrue(loaded.first?.isPinned ?? false)
+
+        service.delete(id: note.id)
+        XCTAssertTrue(service.loadAll().isEmpty)
+    }
+
+    func testFailedPINAttemptsRecordedInSecurityAuditLog() {
+        PINService.shared.setPIN("2468")
+        PINService.shared.clearSecurityEvents()
+        XCTAssertTrue(PINService.shared.securityEvents().isEmpty)
+
+        XCTAssertNil(PINService.shared.verifyWithMode("1111"))
+        XCTAssertNil(PINService.shared.verifyWithMode("2222"))
+
+        let events = PINService.shared.securityEvents()
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.first?.attemptNumber, 2, "Most recent event is listed first")
+
+        PINService.shared.recordSecurityNote("Auto-locked due to screenshot")
+        XCTAssertEqual(PINService.shared.securityEvents().count, 3)
+        XCTAssertEqual(PINService.shared.securityEvents().first?.note, "Auto-locked due to screenshot")
+
+        PINService.shared.clearSecurityEvents()
+        XCTAssertTrue(PINService.shared.securityEvents().isEmpty)
+    }
 }

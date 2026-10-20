@@ -119,8 +119,10 @@ struct ShowNextSpecialDayIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         // Deliberately does not query SwiftData here: opening the store from an intent
         // while the app is running would create a second context and the read is not
-        // worth the risk. The dialog points at the app, which shows the real answer.
-        .result(dialog: "Open MyVault to see your next special day.")
+        // worth the risk. Instead it reads the lightweight widget summary while
+        // respecting the user's Lock Screen privacy setting.
+        let message = WidgetSummaryService.nextSpecialDayDialog()
+        return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
 

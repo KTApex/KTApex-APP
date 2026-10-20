@@ -276,7 +276,7 @@ struct AlbumDetailView: View {
             // Drop the label so the album stops counting an item that is leaving. The
             // file itself is untouched until Recently Deleted purges it.
             item.albumIDs.removeAll()
-            if item.album?.id == album.id { item.album = nil }
+            item.album = nil
         }
         context.saveReporting { _ in
             alertMessage = "Those items could not be moved to Recently Deleted."

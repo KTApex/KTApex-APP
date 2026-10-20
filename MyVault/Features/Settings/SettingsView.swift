@@ -4,16 +4,21 @@ import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject private var themeManager: ThemeManager
+    @EnvironmentObject private var appState: AppState
     @Environment(\.modelContext) private var context
     @Query private var media: [VaultMedia]
     @Query private var albums: [VaultAlbum]
     @Query private var events: [SpecialDay]
     @State private var showingPINSetup = false
+    @State private var showingDecoyPINSetup = false
     @State private var showingStorage = false
     @State private var showingDuplicates = false
     @State private var notifStatus: UNAuthorizationStatus = .notDetermined
     @State private var autoLock = AppSettingsStore.autoLockTimeout
     @State private var notificationPrivacy = AppSettingsStore.notificationPrivacyMode
+    @State private var lockOnCapture = AppSettingsStore.lockOnScreenCapture
+    @State private var panicFaceDown = AppSettingsStore.panicFaceDownLock
+    @State private var securityEventCount = 0
 
     private let lockOptions = [(0, "Immediately"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes")]
 
@@ -26,7 +31,8 @@ struct SettingsView: View {
     }
 
     private var stats: StorageService.Stats {
-        StorageService.shared.stats(media: media, albums: albums)
+        guard !appState.isDecoyMode else { return StorageService.Stats() }
+        return StorageService.shared.stats(media: media, albums: albums)
     }
 
     var body: some View {
@@ -43,6 +49,18 @@ struct SettingsView: View {
                             PINService.shared.disable()
                             Haptics.success()
                         }
+                        if !appState.isDecoyMode {
+                            if PINService.shared.isDecoyEnabled {
+                                Button("Disable Decoy PIN", role: .destructive) {
+                                    PINService.shared.disableDecoy()
+                                    Haptics.success()
+                                }
+                            } else {
+                                Button("Set up Decoy PIN") {
+                                    showingDecoyPINSetup = true
+                                }
+                            }
+                        }
                     } else {
                         Button("Set up PIN") { showingPINSetup = true }
                     }
@@ -50,6 +68,28 @@ struct SettingsView: View {
                         ForEach(lockPickerOptions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .onChange(of: autoLock) { _, v in AppSettingsStore.setAutoLock(v) }
+                    Toggle("Lock on Screenshot / Recording", isOn: $lockOnCapture)
+                        .onChange(of: lockOnCapture) { _, v in AppSettingsStore.setLockOnScreenCapture(v) }
+                    Toggle("Face-Down Panic Lock", isOn: $panicFaceDown)
+                        .onChange(of: panicFaceDown) { _, v in AppSettingsStore.setPanicFaceDownLock(v) }
+                    if !appState.isDecoyMode {
+                        NavigationLink {
+                            SecurityAuditLogView()
+                        } label: {
+                            HStack {
+                                Text("Security Audit Log")
+                                Spacer()
+                                if securityEventCount > 0 {
+                                    Text("\(securityEventCount)")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 2)
+                                        .background(Color.red.opacity(0.15), in: Capsule())
+                                        .foregroundStyle(.red)
+                                }
+                            }
+                        }
+                    }
                 } header: {
                     Text("Security")
                 } footer: {
@@ -83,6 +123,7 @@ struct SettingsView: View {
                         .accessibilityHint("Removes event names from reminder notifications.")
                         .onChange(of: notificationPrivacy) { _, value in
                             AppSettingsStore.setNotificationPrivacyMode(value)
+                            WidgetSummaryService.refresh(events: events, privacyMode: value)
                             // Re-apply immediately so reminders already scheduled with an
                             // event title stop exposing it.
                             Task { await NotificationService.shared.rescheduleAll(events) }
@@ -131,8 +172,12 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .sheet(isPresented: $showingPINSetup) { PINSetupView() }
+            .sheet(isPresented: $showingDecoyPINSetup) { DecoyPINSetupView() }
             .sheet(isPresented: $showingStorage) { StorageView() }
             .sheet(isPresented: $showingDuplicates) { DuplicatesView() }
+            .onAppear {
+                securityEventCount = appState.isDecoyMode ? 0 : PINService.shared.securityEvents().count
+            }
             .task {
                 notifStatus = await NotificationService.shared.authorizationStatus()
                 // If "Never" is stored but is no longer a safe choice — for example the
@@ -160,12 +205,15 @@ struct SettingsView: View {
 struct StorageView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
     @Query private var media: [VaultMedia]
     @Query private var albums: [VaultAlbum]
     @State private var confirmingClear = false
+    @State private var integrityReport: StorageService.IntegrityReport?
 
     private var stats: StorageService.Stats {
-        StorageService.shared.stats(media: media, albums: albums)
+        guard !appState.isDecoyMode else { return StorageService.Stats() }
+        return StorageService.shared.stats(media: media, albums: albums)
     }
 
     var body: some View {
@@ -178,6 +226,18 @@ struct StorageView: View {
                     HStack { Text("Files"); Spacer(); Text("\(stats.fileCount)") }
                     HStack { Text("Albums"); Spacer(); Text("\(stats.albumCount)") }
                 }
+                if !appState.isDecoyMode {
+                    Section {
+                        Button {
+                            integrityReport = StorageService.shared.verifyAndRepairIntegrity(media: media)
+                            Haptics.success()
+                        } label: {
+                            Label("Verify & Repair Vault Integrity", systemImage: "checkmark.shield")
+                        }
+                    } footer: {
+                        Text("Verifies every encrypted item against its SHA-256 hash and removes any unreferenced ciphertext blobs.")
+                    }
+                }
                 Section {
                     Button("Empty Trash", role: .destructive) { confirmingClear = true }
                 }
@@ -185,8 +245,21 @@ struct StorageView: View {
             .navigationTitle("Storage")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .alert(
+                "Vault Integrity Report",
+                isPresented: Binding(
+                    get: { integrityReport != nil },
+                    set: { if !$0 { integrityReport = nil } }
+                ),
+                presenting: integrityReport
+            ) { _ in
+                Button("OK", role: .cancel) { integrityReport = nil }
+            } message: { report in
+                Text(report.summaryMessage)
+            }
             .confirmationDialog("Permanently delete everything in trash?", isPresented: $confirmingClear, titleVisibility: .visible) {
                 Button("Delete All", role: .destructive) {
+                    guard !appState.isDecoyMode else { return }
                     for m in media where m.isInTrash {
                         VaultStorageService.shared.delete(fileName: m.encryptedFileName)
                         context.delete(m)
@@ -200,31 +273,124 @@ struct StorageView: View {
     }
 }
 
+struct SecurityAuditLogView: View {
+    @State private var events: [PINService.SecurityEvent] = []
+
+    var body: some View {
+        Group {
+            if events.isEmpty {
+                MVEmptyState(
+                    symbol: "checkmark.shield.fill",
+                    title: "No Security Alerts",
+                    subtitle: "Failed PIN attempts and screen-capture auto-locks will appear here."
+                )
+            } else {
+                List {
+                    Section {
+                        ForEach(events) { event in
+                            HStack(spacing: 12) {
+                                Image(systemName: event.triggeredLockout ? "exclamationmark.lock.fill" : "exclamationmark.shield.fill")
+                                    .foregroundStyle(event.triggeredLockout ? .red : .orange)
+                                    .font(.title3)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(event.note ?? "Incorrect PIN attempt #\(event.attemptNumber)")
+                                        .font(MVFont.headline)
+                                    Text(event.timestamp.formatted(date: .abbreviated, time: .standard))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if event.triggeredLockout {
+                                        Text("Triggered cooldown lockout")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.red)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    } header: {
+                        Text("Recorded Events (\(events.count))")
+                    }
+                }
+            }
+        }
+        .navigationTitle("Security Audit Log")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !events.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Clear Log", role: .destructive) {
+                        PINService.shared.clearSecurityEvents()
+                        events = []
+                        Haptics.success()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            events = PINService.shared.securityEvents()
+        }
+    }
+}
+
 struct DuplicatesView: View {
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
     @Query private var media: [VaultMedia]
+    @State private var alertMessage: String?
 
     private var groups: [[VaultMedia]] {
-        StorageService.shared.duplicateGroups(in: media)
+        guard !appState.isDecoyMode else { return [] }
+        return StorageService.shared.duplicateGroups(in: media)
     }
 
     var body: some View {
         NavigationStack {
             Group {
                 if groups.isEmpty {
-                    MVEmptyState(symbol: "doc.on.doc", title: "No duplicates", subtitle: "Potential duplicates found will appear here for your review.")
+                    MVEmptyState(
+                        symbol: "doc.on.doc",
+                        title: "No duplicates",
+                        subtitle: "Potential duplicates found will appear here for your review."
+                    )
                 } else {
                     List {
-                        ForEach(groups.indices, id: \.self) { i in
-                            Section("Potential duplicates found — group \(i + 1)") {
-                                ForEach(groups[i]) { m in
-                                    HStack {
-                                        Image(systemName: m.isVideo ? "video.fill" : "photo.fill")
-                                        Text(m.fileName).lineLimit(1)
+                        ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                            Section {
+                                ForEach(group) { item in
+                                    HStack(spacing: 12) {
+                                        MediaThumbnailView(item: item, pixelSize: 120)
+                                            .frame(width: 48, height: 48)
+                                            .clipShape(RoundedRectangle(cornerRadius: MVRadius.s, style: .continuous))
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.fileName.isEmpty ? (item.isVideo ? "Video" : "Photo") : item.fileName)
+                                                .font(MVFont.headline)
+                                                .lineLimit(1)
+                                            Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                         Spacer()
-                                        Text(StorageService.formatted(m.fileSize)).font(.caption).foregroundStyle(.secondary)
+                                        Text(StorageService.formatted(item.fileSize))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .swipeActions(edge: .trailing) {
+                                        Button("Trash", role: .destructive) {
+                                            trashSingle(item)
+                                        }
                                     }
                                 }
+                                Button(role: .destructive) {
+                                    cleanUpGroup(group)
+                                } label: {
+                                    Label(
+                                        "Keep 1, Move \(group.count - 1) to Recently Deleted",
+                                        systemImage: "trash"
+                                    )
+                                }
+                            } header: {
+                                Text("Duplicate group \(index + 1) · \(group.count) identical items")
                             }
                         }
                     }
@@ -232,21 +398,91 @@ struct DuplicatesView: View {
             }
             .navigationTitle("Duplicates")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                if !groups.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Clean Up All", role: .destructive) {
+                            cleanUpAllGroups()
+                        }
+                    }
+                }
+            }
+            .alert("Duplicates", isPresented: Binding(
+                get: { alertMessage != nil },
+                set: { if !$0 { alertMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { alertMessage = nil }
+            } message: {
+                Text(alertMessage ?? "")
+            }
         }
+    }
+
+    private func trashSingle(_ item: VaultMedia) {
+        item.isInTrash = true
+        item.trashedAt = Date()
+        item.albumIDs.removeAll()
+        item.album = nil
+        context.saveReporting { _ in
+            alertMessage = "The duplicate could not be moved to Recently Deleted."
+        }
+        Haptics.success()
+    }
+
+    private func cleanUpGroup(_ group: [VaultMedia]) {
+        let removed = StorageService.shared.moveDuplicatesToTrash(in: group)
+        guard removed > 0 else { return }
+        context.saveReporting { _ in
+            alertMessage = "The duplicates could not be moved to Recently Deleted."
+        }
+        Haptics.success()
+    }
+
+    private func cleanUpAllGroups() {
+        var total = 0
+        for group in groups {
+            total += StorageService.shared.moveDuplicatesToTrash(in: group)
+        }
+        guard total > 0 else { return }
+        context.saveReporting { _ in
+            alertMessage = "Some duplicates could not be moved to Recently Deleted."
+        }
+        Haptics.success()
     }
 }
 
 struct BackupSettingsView: View {
-    @State private var enabled = UserDefaults.standard.bool(forKey: "mv.backupEnabled")
+    @Environment(\.modelContext) private var context
+    @Query private var metadataList: [BackupMetadata]
+    @State private var enabled = BackupService.shared.isEnabled
+    @State private var statusMessage: String?
+
+    private var metadata: BackupMetadata? { metadataList.first }
+
     var body: some View {
         List {
             Section {
                 Toggle("Encrypted iCloud Backup", isOn: $enabled)
-                    .onChange(of: enabled) { _, v in
-                        UserDefaults.standard.set(v, forKey: "mv.backupEnabled")
-                        Haptics.success()
+                    .onChange(of: enabled) { _, value in
+                        BackupService.shared.isEnabled = value
+                        let meta = BackupService.shared.fetchOrCreateMetadata(in: context)
+                        meta.isEnabled = value
+                        try? context.save()
+                        if value && BackupService.shared.isiCloudAvailable {
+                            syncNow()
+                        } else {
+                            Haptics.success()
+                        }
                     }
+                if enabled {
+                    Button {
+                        syncNow()
+                    } label: {
+                        Label("Sync Encrypted Blobs Now", systemImage: "arrow.triangle.2.circlepath.icloud")
+                    }
+                    .disabled(!BackupService.shared.isiCloudAvailable)
+                }
             } header: {
                 Text("Backup")
             } footer: {
@@ -254,11 +490,48 @@ struct BackupSettingsView: View {
                     ? "Only AES-GCM ciphertext is uploaded. Your key stays in this device's Keychain, so enable this only if you understand a new device cannot read the backup without a key transfer."
                     : "iCloud is not signed in on this device. Local-only mode keeps everything on-device.")
             }
+
+            if let metadata, let lastBackupAt = metadata.lastBackupAt {
+                Section("Last Sync") {
+                    HStack {
+                        Text("Last synced")
+                        Spacer()
+                        Text(lastBackupAt.formatted(date: .abbreviated, time: .shortened))
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Encrypted blobs")
+                        Spacer()
+                        Text("\(metadata.encryptedItemCount)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section("Modes") {
                 Label("Local-only: nothing leaves this device.", systemImage: "iphone")
                 Label("Encrypted backup: ciphertext blobs sync via iCloud Drive.", systemImage: "icloud")
             }
         }
         .navigationTitle("Backup")
+        .alert("iCloud Sync", isPresented: Binding(
+            get: { statusMessage != nil },
+            set: { if !$0 { statusMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { statusMessage = nil }
+        } message: {
+            Text(statusMessage ?? "")
+        }
+    }
+
+    private func syncNow() {
+        do {
+            let updated = try BackupService.shared.syncEncryptedBlobs(in: context)
+            Haptics.success()
+            statusMessage = "Synced \(updated.encryptedItemCount) encrypted \(updated.encryptedItemCount == 1 ? "item" : "items") to iCloud Drive."
+        } catch {
+            Haptics.error()
+            statusMessage = error.localizedDescription
+        }
     }
 }

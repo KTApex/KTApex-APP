@@ -59,4 +59,32 @@ final class StorageServiceTests: XCTestCase {
         // the path the older screens use.
         XCTAssertEqual(album.itemCount(in: []), 1)
     }
+
+    func testMoveDuplicatesToTrashKeepsOneAndMergesMetadata() {
+        let holiday = VaultAlbum(name: "Holiday")
+        let first = media(type: "photo", size: 10, hash: "dup")
+        let second = media(type: "photo", size: 10, hash: "dup")
+        second.isFavorite = true
+        second.caption = "Best beach sunset"
+        second.tags = ["beach", "2026"]
+        second.albumIDs = [holiday.id]
+        second.album = holiday
+
+        let removed = StorageService.shared.moveDuplicatesToTrash(in: [first, second], keeping: first.id)
+        XCTAssertEqual(removed, 1)
+        XCTAssertFalse(first.isInTrash)
+        XCTAssertTrue(first.isFavorite, "favorite flag from duplicate should be preserved on kept item")
+        XCTAssertEqual(first.caption, "Best beach sunset")
+        XCTAssertEqual(first.tags, ["beach", "2026"])
+        XCTAssertTrue(first.belongs(to: holiday), "album membership from duplicate should be preserved on kept item")
+        XCTAssertTrue(second.isInTrash)
+        XCTAssertTrue(second.albumIDs.isEmpty)
+        XCTAssertNil(second.album)
+    }
+
+    func testIntegrityReportSummaryMessage() {
+        let report = StorageService.IntegrityReport(verifiedFiles: 5, orphanedFilesRemoved: 2, missingFileRows: 0)
+        XCTAssertTrue(report.summaryMessage.contains("5 encrypted files verified"))
+        XCTAssertTrue(report.summaryMessage.contains("Removed 2 orphaned encrypted blobs"))
+    }
 }

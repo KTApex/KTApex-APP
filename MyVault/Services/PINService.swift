@@ -1,7 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// PIN authentication gate.
+/// PIN authentication gate (supports both the primary Vault PIN and an optional
+/// Decoy / Duress PIN).
 ///
 /// SECURITY MODEL:
 /// - The PIN is *only* an in-app gate, NOT a source of the vault encryption key.
@@ -14,6 +15,21 @@ import CryptoKit
 /// - Failed-attempt counter and lockout timestamp are stored in the Keychain (not
 ///   UserDefaults) so resetting app preferences cannot defeat rate limiting.
 final class PINService {
+    enum UnlockMode: Equatable {
+        case primary
+        case decoy
+    }
+
+    struct SecurityEvent: Codable, Identifiable, Equatable {
+        var id: String = UUID().uuidString
+        var timestamp: Date = Date()
+        var detail: String
+        var attemptNumber: Int = 0
+        var triggeredLockout: Bool = false
+
+        var note: String? { detail }
+    }
+
     static let shared = PINService()
     private let attemptsAccount = "mv.pinAttempts"
     private let lockoutAccount = "mv.pinLockoutUntil"
@@ -23,6 +39,10 @@ final class PINService {
 
     var isEnabled: Bool {
         KeychainService.shared.get(KeychainService.Key.pinVerifier) != nil
+    }
+
+    var isDecoyEnabled: Bool {
+        KeychainService.shared.get(KeychainService.Key.decoyPinVerifier) != nil
     }
 
     static func isValidPIN(_ pin: String) -> Bool {
@@ -42,27 +62,90 @@ final class PINService {
         KeychainService.shared.delete(lockoutAccount)
     }
 
+    /// Configures a secondary Decoy (Duress) PIN. Returns false if `pin` is invalid
+    /// or matches the primary PIN.
+    @discardableResult
+    func setDecoyPIN(_ pin: String) -> Bool {
+        guard Self.isValidPIN(pin), isEnabled else { return false }
+        if let primarySalt = KeychainService.shared.get(KeychainService.Key.pinSalt),
+           let primaryStored = KeychainService.shared.get(KeychainService.Key.pinVerifier),
+           constantTimeEquals(derive(pin: pin, salt: primarySalt), primaryStored) {
+            return false
+        }
+        var saltBytes = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { saltBytes[i] = UInt8.random(in: 0...255) }
+        let salt = Data(saltBytes)
+        let verifier = derive(pin: pin, salt: salt)
+        KeychainService.shared.set(salt, for: KeychainService.Key.decoyPinSalt)
+        KeychainService.shared.set(verifier, for: KeychainService.Key.decoyPinVerifier)
+        return true
+    }
+
     func verify(_ pin: String) -> Bool {
+        verifyWithMode(pin) == .primary
+    }
+
+    /// Verifies `pin` against the primary PIN first, then the optional Decoy PIN.
+    func verifyWithMode(_ pin: String) -> UnlockMode? {
         if let untilData = KeychainService.shared.get(lockoutAccount),
            let str = String(data: untilData, encoding: .utf8),
            let ts = Double(str), Date(timeIntervalSince1970: ts) > Date() {
-            return false
+            return nil
         }
         guard let salt = KeychainService.shared.get(KeychainService.Key.pinSalt),
-              let stored = KeychainService.shared.get(KeychainService.Key.pinVerifier) else { return false }
+              let stored = KeychainService.shared.get(KeychainService.Key.pinVerifier) else { return nil }
         if constantTimeEquals(derive(pin: pin, salt: salt), stored) {
             resetAttempts()
-            return true
+            return .primary
+        }
+        if let decoySalt = KeychainService.shared.get(KeychainService.Key.decoyPinSalt),
+           let decoyStored = KeychainService.shared.get(KeychainService.Key.decoyPinVerifier),
+           constantTimeEquals(derive(pin: pin, salt: decoySalt), decoyStored) {
+            resetAttempts()
+            return .decoy
         }
         recordFailure()
-        return false
+        return nil
+    }
+
+    func disableDecoy() {
+        KeychainService.shared.delete(KeychainService.Key.decoyPinVerifier)
+        KeychainService.shared.delete(KeychainService.Key.decoyPinSalt)
     }
 
     func disable() {
         KeychainService.shared.delete(KeychainService.Key.pinVerifier)
         KeychainService.shared.delete(KeychainService.Key.pinSalt)
+        disableDecoy()
         KeychainService.shared.delete(attemptsAccount)
         KeychainService.shared.delete(lockoutAccount)
+        clearSecurityEvents()
+    }
+
+    // MARK: - Break-in / Security Audit Log
+
+    func securityEvents() -> [SecurityEvent] {
+        guard let data = KeychainService.shared.get(KeychainService.Key.failedUnlockLog),
+              let decoded = try? JSONDecoder().decode([SecurityEvent].self, from: data) else {
+            return []
+        }
+        return decoded.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    func clearSecurityEvents() {
+        KeychainService.shared.delete(KeychainService.Key.failedUnlockLog)
+    }
+
+    func recordSecurityNote(_ detail: String, attemptNumber: Int = 0, triggeredLockout: Bool = false) {
+        var existing = securityEvents()
+        existing.insert(
+            SecurityEvent(detail: detail, attemptNumber: attemptNumber, triggeredLockout: triggeredLockout),
+            at: 0
+        )
+        if existing.count > 25 { existing = Array(existing.prefix(25)) }
+        if let encoded = try? JSONEncoder().encode(existing) {
+            KeychainService.shared.set(encoded, for: KeychainService.Key.failedUnlockLog)
+        }
     }
 
     var lockoutUntil: Date? {
@@ -101,7 +184,15 @@ final class PINService {
     private func recordFailure() {
         let n = attemptCount + 1
         KeychainService.shared.set(Data(String(n).utf8), for: attemptsAccount)
-        if n >= 5 {
+        let lockedOut = n >= 5
+        recordSecurityNote(
+            lockedOut
+                ? "5 failed PIN attempts (60s lockout triggered)"
+                : "Failed PIN attempt (#\(n))",
+            attemptNumber: n,
+            triggeredLockout: lockedOut
+        )
+        if lockedOut {
             let until = Date().addingTimeInterval(60)
             KeychainService.shared.set(Data(String(until.timeIntervalSince1970).utf8), for: lockoutAccount)
             KeychainService.shared.delete(attemptsAccount)

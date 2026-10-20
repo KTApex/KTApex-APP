@@ -52,6 +52,8 @@ final class VaultMedia {
     var width: Int = 0
     var height: Int = 0
     var duration: Double = 0
+    var caption: String = ""
+    var tagsRaw: String = ""
 
     /// Album membership as stable album identifiers. This is the source of truth:
     /// it survives rename, album deletion and a backup round-trip without
@@ -72,6 +74,33 @@ final class VaultMedia {
     }
 
     var isVideo: Bool { mediaType == "video" }
+    var isDocument: Bool { mediaType == "document" || fileName.lowercased().hasSuffix(".pdf") }
+
+    /// Normalised tags parsed from `tagsRaw` (comma- or space-separated, without leading `#`).
+    var tags: [String] {
+        get {
+            var seen = Set<String>()
+            var result: [String] = []
+            let parts = tagsRaw.components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+            for raw in parts {
+                var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                while cleaned.hasPrefix("#") { cleaned.removeFirst() }
+                cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !cleaned.isEmpty else { continue }
+                let key = cleaned.lowercased()
+                if seen.insert(key).inserted {
+                    result.append(cleaned)
+                }
+            }
+            return result
+        }
+        set {
+            tagsRaw = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: ", ")
+        }
+    }
 
     /// Every album this item belongs to, as a set of stable IDs.
     ///
@@ -103,5 +132,27 @@ final class VaultMedia {
         var names: [String] = []
         if let primary = album?.name, !primary.isEmpty { names.append(primary) }
         return names
+    }
+
+    /// Names of every album this item belongs to, resolved against `albums` so
+    /// secondary album memberships in `albumIDs` are included alongside `album`.
+    func albumNames(in albums: [VaultAlbum]) -> [String] {
+        guard !albums.isEmpty else { return albumNames }
+        let byID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0.name) })
+        var orderedIDs = albumIDs
+        if let primaryID = album?.id, !orderedIDs.contains(primaryID) {
+            orderedIDs.insert(primaryID, at: 0)
+        }
+        var seen = Set<String>()
+        var result: [String] = []
+        for id in orderedIDs {
+            if let name = byID[id], !name.isEmpty, seen.insert(name).inserted {
+                result.append(name)
+            }
+        }
+        if let primary = album?.name, !primary.isEmpty, seen.insert(primary).inserted {
+            result.append(primary)
+        }
+        return result
     }
 }

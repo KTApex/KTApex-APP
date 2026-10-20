@@ -88,6 +88,15 @@ enum GalleryDensity: String, CaseIterable, Identifiable {
 
     static let preferencesKey = "mv.galleryDensity"
     static let legacyColumnsKey = "mv.galleryColumns"
+    static let aspectRatioGridKey = "mv.galleryAspectRatioGrid"
+
+    static func loadAspectRatioGrid(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: aspectRatioGridKey)
+    }
+
+    static func saveAspectRatioGrid(_ enabled: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: aspectRatioGridKey)
+    }
 
     /// Neighbour in the ordered list, for pinch and the segmented control.
     func stepped(by delta: Int) -> GalleryDensity {

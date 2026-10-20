@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -33,12 +34,26 @@ struct MediaSniffResult: Equatable {
 enum MediaSniff {
 
     static func sniff(_ data: Data) -> MediaSniffResult? {
+        if let pdf = pdfResult(data) { return pdf }
         if let image = imageResult(data) { return image }
         if let video = videoResult(data) { return video }
         return nil
     }
 
     static func isImage(_ data: Data) -> Bool { imageResult(data) != nil }
+
+    static func isPDF(_ data: Data) -> Bool { pdfResult(data) != nil }
+
+    // MARK: - PDF Documents
+
+    static func pdfResult(_ data: Data) -> MediaSniffResult? {
+        let pdfMagic: [UInt8] = [0x25, 0x50, 0x44, 0x46, 0x2D] // "%PDF-"
+        guard data.count >= 8, data.starts(with: pdfMagic),
+              let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider),
+              doc.numberOfPages > 0 else { return nil }
+        return MediaSniffResult(kind: .image, fileExtension: "pdf")
+    }
 
     // MARK: - Images
 

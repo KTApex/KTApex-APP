@@ -144,4 +144,29 @@ final class CountdownEngineTests: XCTestCase {
         AppSettingsStore.setNotificationPrivacyMode(true)
         XCTAssertTrue(AppSettingsStore.notificationPrivacyMode)
     }
+
+    func testSpecialDayCoverAndLinkedAlbumResolution() {
+        let e = SpecialDay(title: "Wedding", date: Date(), type: .wedding)
+        let photo = VaultMedia(fileName: "ring.jpg", encryptedFileName: "enc-ring", mediaType: "photo")
+        let trashed = VaultMedia(fileName: "old.jpg", encryptedFileName: "enc-old", mediaType: "photo")
+        trashed.isInTrash = true
+        let album = VaultAlbum(name: "Wedding Album")
+
+        e.photoFileName = photo.id
+        e.linkedAlbumID = album.id
+        XCTAssertEqual(e.coverMedia(in: [photo, trashed])?.id, photo.id)
+        XCTAssertEqual(e.linkedAlbum(in: [album])?.id, album.id)
+
+        e.photoFileName = trashed.id
+        XCTAssertNil(e.coverMedia(in: [photo, trashed]), "trashed media must never be used as a cover")
+    }
+
+    func testSecureNoteSortingAndSearch() {
+        let older = SecureNote(title: "Trip", body: "Café in Paris", isPinned: false, updatedAt: Date(timeIntervalSince1970: 100))
+        let pinned = SecureNote(title: "Codes", body: "Safe combination", isPinned: true, updatedAt: Date(timeIntervalSince1970: 50))
+        let sorted = SecureNoteService.sorted([older, pinned])
+        XCTAssertEqual(sorted.map(\.title), ["Codes", "Trip"], "pinned notes must sort ahead of unpinned notes")
+        XCTAssertTrue(SecureNoteService.matches(older, search: "cafe"), "search must be case- and diacritic-insensitive")
+        XCTAssertFalse(SecureNoteService.matches(older, search: "combination"))
+    }
 }

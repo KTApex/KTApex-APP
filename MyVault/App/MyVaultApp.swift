@@ -69,6 +69,30 @@ struct MyVaultApp: App {
                     guard let url = note.object as? URL else { return }
                     appState.openBackupDocument(at: url)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
+                    guard appState.isUnlocked, AppSettingsStore.lockOnScreenCapture else { return }
+                    PINService.shared.recordSecurityNote("Screenshot detected — vault auto-locked")
+                    appState.lock()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in
+                    guard UIScreen.main.isCaptured else {
+                        if scenePhase == .active { PrivacyShield.shared.hideShield() }
+                        return
+                    }
+                    guard AppSettingsStore.lockOnScreenCapture else { return }
+                    PrivacyShield.shared.showShield()
+                    if appState.isUnlocked {
+                        PINService.shared.recordSecurityNote("Screen recording detected — vault auto-locked")
+                        appState.lock()
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+                    guard appState.isUnlocked,
+                          AppSettingsStore.panicFaceDownLock,
+                          UIDevice.current.orientation == .faceDown else { return }
+                    Haptics.tap()
+                    appState.lock()
+                }
         }
         .modelContainer(sharedModelContainer)
     }
@@ -77,6 +101,7 @@ struct MyVaultApp: App {
         // Clear scratch space left by a share, export or restore that was interrupted
         // by a crash or by the system terminating the app.
         ShareService.purgeStaleExports()
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         NotificationService.shared.requestAuthorizationIfNeeded()
         Task { await KeychainService.shared.ensureVaultKeyExists() }
         Task { @MainActor in
@@ -93,11 +118,15 @@ struct MyVaultApp: App {
 
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
+        case .inactive:
+            PrivacyShield.shared.showShield()
         case .background:
             PrivacyShield.shared.showShield()
             appState.didEnterBackground()
         case .active:
-            PrivacyShield.shared.hideShield()
+            if !(UIScreen.main.isCaptured && AppSettingsStore.lockOnScreenCapture) {
+                PrivacyShield.shared.hideShield()
+            }
             appState.didBecomeActive()
         default: break
         }

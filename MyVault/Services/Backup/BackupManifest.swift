@@ -21,6 +21,9 @@ struct BackupManifest: Codable, Equatable {
     var specialDays: [SpecialDay]
     var reminders: [Reminder]
     var settings: Settings
+    /// Encrypted private notes included in the backup. Optional so backups created by
+    /// earlier builds without notes decode cleanly.
+    var notes: [SecureNote]? = nil
 
     struct Counts: Codable, Equatable {
         var media: Int
@@ -59,6 +62,10 @@ struct BackupManifest: Codable, Equatable {
         /// (the key is simply absent), and the restore path falls back to `albumID` in
         /// that case. Additive, so the schema version does not need to change.
         var albumIDs: [String]?
+        /// Optional caption / memory text attached to the item.
+        var caption: String?
+        /// Optional comma-separated tags attached to the item.
+        var tagsRaw: String?
         /// Name of the archive entry holding this item's bytes.
         var entryName: String
 
@@ -85,6 +92,8 @@ struct BackupManifest: Codable, Equatable {
             duration = try container.decodeIfPresent(Double.self, forKey: .duration) ?? 0
             albumID = try container.decodeIfPresent(String.self, forKey: .albumID)
             albumIDs = try container.decodeIfPresent([String].self, forKey: .albumIDs)
+            caption = try container.decodeIfPresent(String.self, forKey: .caption)
+            tagsRaw = try container.decodeIfPresent(String.self, forKey: .tagsRaw)
             entryName = try container.decode(String.self, forKey: .entryName)
         }
 
@@ -104,6 +113,8 @@ struct BackupManifest: Codable, Equatable {
             duration: Double,
             albumID: String?,
             albumIDs: [String]? = nil,
+            caption: String? = nil,
+            tagsRaw: String? = nil,
             entryName: String
         ) {
             self.id = id
@@ -120,6 +131,8 @@ struct BackupManifest: Codable, Equatable {
             self.duration = duration
             self.albumID = albumID
             self.albumIDs = albumIDs
+            self.caption = caption
+            self.tagsRaw = tagsRaw
             self.entryName = entryName
         }
 
@@ -142,6 +155,8 @@ struct BackupManifest: Codable, Equatable {
         var reminderTimeHour: Int
         var reminderTimeMinute: Int
         var createdAt: Date
+        var photoFileName: String? = nil
+        var linkedAlbumID: String? = nil
     }
 
     struct Reminder: Codable, Equatable {
@@ -190,6 +205,7 @@ struct BackupManifest: Codable, Equatable {
         if !albums.isEmpty { lines.append("\(albums.count) album\(albums.count == 1 ? "" : "s")") }
         if !specialDays.isEmpty { lines.append("\(specialDays.count) special day\(specialDays.count == 1 ? "" : "s")") }
         if !reminders.isEmpty { lines.append("\(reminders.count) reminder\(reminders.count == 1 ? "" : "s")") }
+        if let notes, !notes.isEmpty { lines.append("\(notes.count) private note\(notes.count == 1 ? "" : "s")") }
         lines.append(StorageService.formatted(counts.totalMediaBytes))
         return lines
     }

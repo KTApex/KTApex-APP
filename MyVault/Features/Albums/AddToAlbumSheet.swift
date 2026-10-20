@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// Picks vault items to file into an album.
 ///
@@ -8,6 +9,7 @@ import SwiftUI
 /// produces IDs and lets the caller write membership.
 struct AddToAlbumSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
 
     let album: VaultAlbum
     let candidates: [VaultMedia]
@@ -25,7 +27,7 @@ struct AddToAlbumSheet: View {
             .filter { !$0.isInTrash }
             .sorted { $0.createdAt > $1.createdAt }
             .filter { item in
-                searchText.isBlank || GalleryComposer.matches(item, search: searchText)
+                searchText.isBlank || GalleryComposer.matches(item, search: searchText, albums: albums)
             }
     }
 

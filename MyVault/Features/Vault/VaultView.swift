@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import UniformTypeIdentifiers
 import UIKit
 
 /// The vault gallery.
@@ -27,6 +28,7 @@ struct VaultView: View {
     /// Thumbnail density, persisted through `UserDefaults`. Seeded from the stored
     /// preference (and the legacy column count) so an existing user keeps their grid.
     @State private var density: GalleryDensity = GalleryDensity.load()
+    @State private var useAspectRatioGrid: Bool = GalleryDensity.loadAspectRatioGrid()
     @State private var selectedAlbumID: String?
 
     @State private var selection = Set<String>()
@@ -42,6 +44,9 @@ struct VaultView: View {
     @State private var newAlbumName = ""
     @State private var showingTrash = false
     @State private var showingAlbums = false
+    @State private var showingNotes = false
+    @State private var showingCamera = false
+    @State private var showingFileImporter = false
 
     /// One alert channel for the whole screen. Presenting two independent alerts
     /// from the same view is unreliable, so importer notices and local failures are
@@ -58,13 +63,14 @@ struct VaultView: View {
     // MARK: - Derived data
 
     private var selectedAlbum: VaultAlbum? {
-        guard let selectedAlbumID else { return nil }
+        guard !appState.isDecoyMode, let selectedAlbumID else { return nil }
         return albums.first { $0.id == selectedAlbumID }
     }
 
     private var visibleMedia: [VaultMedia] {
-        GalleryComposer.sort(
-            GalleryComposer.filter(media, search: searchText, filter: filter, album: selectedAlbum),
+        guard !appState.isDecoyMode else { return [] }
+        return GalleryComposer.sort(
+            GalleryComposer.filter(media, search: searchText, filter: filter, album: selectedAlbum, albums: albums),
             by: sortOrder
         )
     }
@@ -181,6 +187,39 @@ struct VaultView: View {
             .onChange(of: pickerItems) { _, items in handlePickedItems(items) }
             .onChange(of: importer.notice) { _, notice in showNotice(notice) }
             .onChange(of: visibleMedia.count) { _, _ in clampSelection() }
+            .onAppear {
+                consumeOpenAlbumsRequest()
+                consumeOpenNotesRequest()
+            }
+            .onChange(of: appState.openAlbumsRequested) { _, _ in consumeOpenAlbumsRequest() }
+            .onChange(of: appState.openNotesRequested) { _, _ in consumeOpenNotesRequest() }
+            .fullScreenCover(isPresented: $showingCamera) {
+                SecureCameraPicker { payload in
+                    importer.startPayloads([payload], label: "Encrypting camera capture", context: context, album: selectedAlbum)
+                }
+                .ignoresSafeArea()
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.image, .movie, .pdf],
+                allowsMultipleSelection: true
+            ) { result in
+                if case .success(let urls) = result, !urls.isEmpty {
+                    importer.startFiles(urls, context: context, album: selectedAlbum)
+                }
+            }
+    }
+
+    private func consumeOpenAlbumsRequest() {
+        guard appState.openAlbumsRequested else { return }
+        appState.openAlbumsRequested = false
+        showingAlbums = true
+    }
+
+    private func consumeOpenNotesRequest() {
+        guard appState.openNotesRequested else { return }
+        appState.openNotesRequested = false
+        showingNotes = true
     }
 
     /// Navigation, search and the toolbar.
@@ -197,6 +236,7 @@ struct VaultView: View {
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $showingTrash) { TrashView() }
             .navigationDestination(isPresented: $showingAlbums) { AlbumsView() }
+            .navigationDestination(isPresented: $showingNotes) { NotesView() }
             .searchable(text: $searchText, prompt: "Search photos, videos, albums, dates")
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .top, spacing: 0) { topBanner }
@@ -241,7 +281,13 @@ struct VaultView: View {
                 selection: $selection,
                 onOpen: { viewerItem = $0 },
                 onToggleSelection: { toggleSelection($0) },
-                onDensityChange: { setDensity($0) }
+                onDensityChange: { setDensity($0) },
+                useAspectRatioTiles: useAspectRatioGrid,
+                onToggleSectionSelection: { toggleSectionSelection($0) },
+                onToggleFavorite: { toggleSingleFavorite($0) },
+                onShareItem: { shareSingle($0) },
+                onTrashItem: { trashSingle($0) },
+                footerSummary: GalleryComposer.librarySummary(visibleMedia)
             )
         }
     }
@@ -394,6 +440,54 @@ struct VaultView: View {
             }
             .background(.bar)
             .transition(.move(edge: .bottom))
+        } else if !visibleMedia.isEmpty {
+            photosScopeFloatingBar
+                .transition(.opacity)
+        }
+    }
+
+    /// Apple Photos-style floating glass capsule ("Years · Months · Days · All") docked above the tab bar.
+    private var photosScopeFloatingBar: some View {
+        HStack(spacing: 4) {
+            ForEach(GalleryGrouping.photosAppOrder) { scope in
+                let isSelected = grouping == scope
+                Button {
+                    selectTimeScope(scope)
+                } label: {
+                    Text(scope.shortTitle)
+                        .font(.footnote.weight(isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(Color(.tertiarySystemBackground))
+                                    .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Group by \(scope.shortTitle)")
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+        .padding(.bottom, 8)
+    }
+
+    private func selectTimeScope(_ scope: GalleryGrouping) {
+        Haptics.selection()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            grouping = scope
+            switch scope {
+            case .year: setDensity(.compact)
+            case .month: setDensity(.comfortable)
+            case .day: setDensity(.large)
+            case .none: setDensity(.standard)
+            }
         }
     }
 
@@ -496,6 +590,16 @@ struct VaultView: View {
                     Text(option.title).tag(option)
                 }
             }
+            Button {
+                Haptics.selection()
+                useAspectRatioGrid.toggle()
+                GalleryDensity.saveAspectRatioGrid(useAspectRatioGrid)
+            } label: {
+                Label(
+                    useAspectRatioGrid ? "Square Photo Grid" : "Aspect Ratio Grid",
+                    systemImage: useAspectRatioGrid ? "square.grid.2x2" : "rectangle.arrowtriangle.2.outward"
+                )
+            }
         }
         Section("Show") {
             Picker("Filter", selection: $filter) {
@@ -517,10 +621,30 @@ struct VaultView: View {
                 }
             }
         }
-        Section("Albums") {
+        Section("Import") {
+            Button(action: beginImport) {
+                Label("Choose from Photos", systemImage: "photo.on.rectangle")
+            }
+            if SecureCameraPicker.isCameraAvailable {
+                Button {
+                    showingCamera = true
+                } label: {
+                    Label("Take Photo or Video", systemImage: "camera.fill")
+                }
+            }
+            Button {
+                showingFileImporter = true
+            } label: {
+                Label("Import from Files", systemImage: "folder.fill")
+            }
+        }
+        Section("Albums & Notes") {
             Button { showingAlbums = true } label: { Label("Browse Albums", systemImage: "rectangle.stack") }
             Button { newAlbumName = ""; showingNewAlbum = true } label: {
                 Label("New Album", systemImage: "folder.badge.plus")
+            }
+            Button { showingNotes = true } label: {
+                Label("Private Notes", systemImage: "lock.doc.fill")
             }
         }
         Section {
@@ -622,10 +746,23 @@ struct VaultView: View {
 
     private func toggleSelection(_ item: VaultMedia) {
         Haptics.selection()
+        if !isSelecting { isSelecting = true }
         if selection.contains(item.id) {
             selection.remove(item.id)
         } else {
             selection.insert(item.id)
+        }
+    }
+
+    private func toggleSectionSelection(_ section: GallerySection) {
+        Haptics.selection()
+        let ids = Set(section.items.map(\.id))
+        guard !ids.isEmpty else { return }
+        if !isSelecting { isSelecting = true }
+        if ids.isSubset(of: selection) {
+            selection.subtract(ids)
+        } else {
+            selection.formUnion(ids)
         }
     }
 
@@ -740,6 +877,40 @@ struct VaultView: View {
         }
         Haptics.success()
         clearSelection()
+    }
+
+    private func toggleSingleFavorite(_ item: VaultMedia) {
+        item.isFavorite.toggle()
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Favorites not updated", message: message, isError: true)
+        }
+        Haptics.selection()
+    }
+
+    private func shareSingle(_ item: VaultMedia) {
+        Task {
+            do {
+                shareBundle = try await ShareService.shared.prepare([item])
+            } catch {
+                Haptics.error()
+                alertItem = VaultAlert(
+                    title: "Sharing failed",
+                    message: error.localizedDescription + " Nothing was removed from your vault.",
+                    isError: true
+                )
+            }
+        }
+    }
+
+    private func trashSingle(_ item: VaultMedia) {
+        item.isInTrash = true
+        item.trashedAt = Date()
+        item.albumIDs.removeAll()
+        item.album = nil
+        context.saveReporting { message in
+            alertItem = VaultAlert(title: "Item not deleted", message: message, isError: true)
+        }
+        Haptics.success()
     }
 
     private func shareSelection() {

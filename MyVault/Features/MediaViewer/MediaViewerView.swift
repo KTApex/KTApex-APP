@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AVKit
+import PDFKit
 import UIKit
 
 /// Full-screen viewer: swipe between items, pinch or double-tap to zoom, drag while
@@ -27,6 +28,10 @@ struct MediaViewerView: View {
 
     @State private var index = 0
     @State private var showingInfo = false
+    @State private var chromeHidden = false
+    @State private var draftFileName = ""
+    @State private var draftCaption = ""
+    @State private var draftTags = ""
     @State private var shareBundle: ShareService.Prepared?
     @State private var alertItem: ViewerAlert?
     @State private var slideshowRequest: SlideshowRequest?
@@ -89,39 +94,68 @@ struct MediaViewerView: View {
                             // swiping away from a zoomed photo resets it. Without this
                             // the page keeps its 3× scale and the *next* photo opens
                             // already cropped into its own corner.
-                            MediaPageView(media: media, isActive: position == index)
-                                .tag(position)
+                            MediaPageView(
+                                media: media,
+                                isActive: position == index,
+                                onToggleChrome: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        chromeHidden.toggle()
+                                    }
+                                },
+                                onDismiss: { dismiss() },
+                                onShowInfo: { showingInfo = true }
+                            )
+                            .tag(position)
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .accessibilityLabel("Media viewer")
                 }
 
-                // Unobtrusive counter. Lives over the media rather than in the
-                // toolbar, so it stays visible without a second look at the top bar,
-                // and uses `.overlay` semantics so it never shifts the page.
-                if let counter = currentPositionText {
-                    VStack {
+                if !chromeHidden {
+                    VStack(spacing: 8) {
                         Spacer()
-                        Text(counter)
-                            .font(.caption.weight(.medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.9))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.black.opacity(0.35), in: Capsule())
-                            .padding(.bottom, 8)
-                            .accessibilityLabel("Item \(index + 1) of \(items.count)")
+                        if let item, (!item.caption.isEmpty || !item.tags.isEmpty) {
+                            Button {
+                                showingInfo = true
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    if !item.caption.isEmpty {
+                                        Text(item.caption)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white)
+                                            .lineLimit(2)
+                                    }
+                                    if !item.tags.isEmpty {
+                                        Text(item.tags.map { "#\($0)" }.joined(separator: " "))
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(.white.opacity(0.8))
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: MVRadius.m, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                        }
+                        if items.count > 1 {
+                            filmstripBar
+                        }
                     }
-                    .allowsHitTesting(false)
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
                 }
             }
             .navigationTitle(title ?? item?.fileName ?? "")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar)
+            .toolbar(chromeHidden ? .hidden : .visible, for: .bottomBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar { toolbarContent }
-            .statusBarHidden(false)
+            .statusBarHidden(chromeHidden)
             .sheet(isPresented: $showingInfo) { infoSheet }
             .fullScreenCover(item: $slideshowRequest) { request in
                 SlideshowView(items: request.items, startIndex: request.startIndex, title: request.title)
@@ -155,6 +189,18 @@ struct MediaViewerView: View {
             }
             .tint(.white)
             .accessibilityLabel("Close viewer")
+        }
+        ToolbarItem(placement: .principal) {
+            if let item {
+                VStack(spacing: 1) {
+                    Text(item.createdAt.formatted(date: .abbreviated, time: .omitted))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(item.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
@@ -208,6 +254,47 @@ struct MediaViewerView: View {
         return "\(index + 1) of \(items.count)"
     }
 
+    /// Apple Photos-style bottom thumbnail filmstrip scrubber.
+    private var filmstripBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { pos, mediaItem in
+                        let isCurrent = pos == index
+                        Button {
+                            Haptics.selection()
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                                index = pos
+                            }
+                        } label: {
+                            MediaThumbnailView(item: mediaItem, pixelSize: 120)
+                                .frame(width: isCurrent ? 38 : 24, height: 42)
+                                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .strokeBorder(isCurrent ? Color.white : Color.clear, lineWidth: 1.5)
+                                )
+                                .animation(.spring(response: 0.25, dampingFraction: 0.85), value: isCurrent)
+                        }
+                        .buttonStyle(.plain)
+                        .id(pos)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+            }
+            .background(.black.opacity(0.35))
+            .onAppear {
+                proxy.scrollTo(index, anchor: .center)
+            }
+            .onChange(of: index) { _, newIndex in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(newIndex, anchor: .center)
+                }
+            }
+        }
+    }
+
     // MARK: - Info
 
     private var infoSheet: some View {
@@ -216,7 +303,7 @@ struct MediaViewerView: View {
                 if let item {
                     Section("Media") {
                         MVInfoRow(label: "Name", value: item.fileName)
-                        MVInfoRow(label: "Type", value: item.isVideo ? "Video" : "Photo")
+                        MVInfoRow(label: "Type", value: item.isVideo ? "Video" : (item.isDocument ? "PDF Document" : "Photo"))
                         MVInfoRow(label: "Size", value: StorageService.formatted(item.fileSize))
                         if item.width > 0 && item.height > 0 {
                             MVInfoRow(label: "Dimensions", value: "\(item.width) × \(item.height)")
@@ -226,11 +313,26 @@ struct MediaViewerView: View {
                         }
                         MVInfoRow(label: "Added", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
                         MVInfoRow(label: "Favorite", value: item.isFavorite ? "Yes" : "No")
-                        MVInfoRow(label: "Album", value: item.album?.name ?? "None")
+                        let itemAlbumNames = item.albumNames(in: albums)
+                        MVInfoRow(
+                            label: itemAlbumNames.count > 1 ? "Albums" : "Album",
+                            value: itemAlbumNames.isEmpty ? "None" : itemAlbumNames.joined(separator: ", ")
+                        )
+                    }
+                    Section("Details, Caption & Tags") {
+                        TextField("File name", text: $draftFileName)
+                            .accessibilityLabel("File name")
+                        TextField("Add a caption or memory note…", text: $draftCaption, axis: .vertical)
+                            .accessibilityLabel("Caption")
+                        TextField("Tags (e.g. travel, receipt, id)", text: $draftTags)
+                            .accessibilityLabel("Tags")
+                        Button("Save Details") {
+                            saveItemDetails(item)
+                        }
                     }
                     Section {
                         MVInfoRow(label: "Encrypted file", value: item.encryptedFileName)
-                        Text("Photos and videos are stored as AES-GCM ciphertext. Nothing here is uploaded anywhere.")
+                        Text("Photos, videos and documents are stored as AES-GCM ciphertext. Nothing here is uploaded anywhere.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } header: {
@@ -240,6 +342,13 @@ struct MediaViewerView: View {
             }
             .navigationTitle("Information")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if let item {
+                    draftFileName = item.fileName
+                    draftCaption = item.caption
+                    draftTags = item.tagsRaw
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { showingInfo = false } }
             }
@@ -266,6 +375,21 @@ struct MediaViewerView: View {
             alertItem = ViewerAlert(title: "Not saved", message: "The favorite change could not be saved.")
         }
         Haptics.selection()
+    }
+
+    private func saveItemDetails(_ item: VaultMedia) {
+        let trimmedName = draftFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            let ext = (item.fileName as NSString).pathExtension
+            item.fileName = MediaFileName.sanitized(trimmedName, fileExtension: ext.isEmpty ? "jpg" : ext.lowercased())
+            draftFileName = item.fileName
+        }
+        item.caption = draftCaption.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.tagsRaw = draftTags.trimmingCharacters(in: .whitespacesAndNewlines)
+        context.saveReporting { _ in
+            alertItem = ViewerAlert(title: "Not saved", message: "The item details could not be saved.")
+        }
+        Haptics.success()
     }
 
     private func assign(to album: VaultAlbum?) {
@@ -338,6 +462,8 @@ struct MediaViewerView: View {
     private func trash(_ item: VaultMedia) {
         item.isInTrash = true
         item.trashedAt = Date()
+        item.albumIDs.removeAll()
+        item.album = nil
         context.saveReporting { _ in
             alertItem = ViewerAlert(title: "Not deleted", message: "The item could not be moved to Recently Deleted, so it is still in your vault.")
         }
@@ -358,17 +484,22 @@ struct MediaViewerView: View {
 private struct MediaPageView: View {
     let media: VaultMedia
     let isActive: Bool
+    var onToggleChrome: (() -> Void)? = nil
+    var onDismiss: (() -> Void)? = nil
+    var onShowInfo: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Loaded {
         case image(UIImage)
         case video(URL)
+        case pdf(Data)
         case failed
     }
 
     @State private var image: UIImage?
     @State private var player: AVPlayer?
+    @State private var pdfDocument: PDFDocument?
     @State private var loadFailure: String?
     @State private var scratchDirectory: URL?
 
@@ -376,25 +507,34 @@ private struct MediaPageView: View {
     @State private var settledScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var settledOffset: CGSize = .zero
+    @State private var verticalDismissOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             Group {
                 if let image {
+                    let dismissScale = max(0.84, 1.0 - abs(verticalDismissOffset) / 900.0)
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
-                        .scaleEffect(scale)
-                        .offset(offset)
+                        .scaleEffect(scale * dismissScale)
+                        .offset(
+                            x: offset.width,
+                            y: offset.height + verticalDismissOffset
+                        )
                         .gesture(magnificationGesture, including: .all)
                         // While zoomed the image owns the drag (so panning works and
                         // paging is suspended); at 1× the drag is disabled so the
                         // pager keeps handling swipes.
                         .gesture(dragGesture, including: scale > 1 ? .all : .subviews)
+                        .simultaneousGesture(verticalSwipeGesture)
                         .onTapGesture(count: 2) { toggleZoom() }
+                        .onTapGesture(count: 1) { onToggleChrome?() }
                         .accessibilityLabel(media.isVideo ? "Video" : "Photo")
                 } else if let player {
                     VideoPlayer(player: player)
+                } else if let pdfDocument {
+                    PDFKitDocumentView(document: pdfDocument)
                 } else if let loadFailure {
                     VStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle")
@@ -450,6 +590,40 @@ private struct MediaPageView: View {
             .onEnded { _ in settledOffset = offset }
     }
 
+    /// Apple Photos-style vertical swipe at 1× zoom: swipe down to dismiss, swipe up for info/caption.
+    private var verticalSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { value in
+                guard scale <= 1.01 else { return }
+                let dx = abs(value.translation.width)
+                let dy = value.translation.height
+                guard abs(dy) > dx * 1.35 else { return }
+                if dy > 0 {
+                    verticalDismissOffset = dy
+                }
+            }
+            .onEnded { value in
+                guard scale <= 1.01 else { return }
+                let dx = abs(value.translation.width)
+                let dy = value.translation.height
+                if abs(dy) > dx * 1.35 {
+                    if dy > 95 {
+                        Haptics.selection()
+                        onDismiss?()
+                        return
+                    } else if dy < -85 {
+                        Haptics.selection()
+                        verticalDismissOffset = 0
+                        onShowInfo?()
+                        return
+                    }
+                }
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                    verticalDismissOffset = 0
+                }
+            }
+    }
+
     private func toggleZoom() {
         Haptics.tap()
         if scale > 1 {
@@ -486,7 +660,7 @@ private struct MediaPageView: View {
 
     @MainActor
     private func load() async {
-        guard image == nil, player == nil, loadFailure == nil else { return }
+        guard image == nil, player == nil, pdfDocument == nil, loadFailure == nil else { return }
         guard let directory = try? SecureScratch.makeDirectory(prefix: "view") else {
             loadFailure = "This media could not be opened."
             return
@@ -504,6 +678,9 @@ private struct MediaPageView: View {
                 }
                 return .video(url)
             }
+            if MediaSniff.isPDF(data) {
+                return .pdf(data)
+            }
             guard let decoded = UIImage(data: data) else { return .failed }
             return .image(decoded)
         }.value
@@ -513,6 +690,8 @@ private struct MediaPageView: View {
             image = decoded
         case .video(let url):
             player = AVPlayer(url: url)
+        case .pdf(let data):
+            pdfDocument = PDFDocument(data: data)
         case .failed:
             loadFailure = media.isVideo
                 ? "This video could not be decrypted."
@@ -523,9 +702,30 @@ private struct MediaPageView: View {
     private func cleanup() {
         player?.pause()
         player = nil
+        pdfDocument = nil
         if let scratchDirectory {
             SecureScratch.removeDirectory(scratchDirectory)
             self.scratchDirectory = nil
+        }
+    }
+}
+
+private struct PDFKitDocumentView: UIViewRepresentable {
+    let document: PDFDocument
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = .black
+        view.document = document
+        return view
+    }
+
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        if uiView.document !== document {
+            uiView.document = document
         }
     }
 }

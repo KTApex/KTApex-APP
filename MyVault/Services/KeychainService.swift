@@ -11,6 +11,9 @@ final class KeychainService {
         static let vaultKey = "mv.vaultKey"
         static let pinVerifier = "mv.pinVerifier"
         static let pinSalt = "mv.pinSalt"
+        static let decoyPinVerifier = "mv.decoyPinVerifier"
+        static let decoyPinSalt = "mv.decoyPinSalt"
+        static let failedUnlockLog = "mv.failedUnlockLog"
     }
 
     @discardableResult

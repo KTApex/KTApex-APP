@@ -92,6 +92,21 @@ final class GalleryComposerTests: XCTestCase {
         XCTAssertEqual(GalleryComposer.filter([beach], search: "summer").map(\.fileName), ["beach"])
     }
 
+    func testSearchMatchesSecondaryAlbumNameInMultiAlbumItem() {
+        let holiday = VaultAlbum(name: "Summer Holiday")
+        let family = VaultAlbum(name: "Family Reunion")
+        let beach = media(name: "beach")
+        AlbumEditor.add([beach], to: holiday)
+        AlbumEditor.add([beach], to: family)
+
+        XCTAssertEqual(
+            GalleryComposer.filter([beach], search: "reunion", albums: [holiday, family]).map(\.fileName),
+            ["beach"],
+            "searching must match secondary album labels as well as the primary album"
+        )
+        XCTAssertEqual(beach.albumNames(in: [holiday, family]), ["Summer Holiday", "Family Reunion"])
+    }
+
     func testFiltersCombine() {
         let holiday = VaultAlbum(name: "Holiday")
         let items = [
@@ -140,6 +155,24 @@ final class GalleryComposerTests: XCTestCase {
     func testBlankSearchKeepsEverything() {
         let items = [media(name: "a"), media(name: "b")]
         XCTAssertEqual(GalleryComposer.filter(items, search: "   ").count, 2)
+    }
+
+    func testSearchMatchesCaptionAndTags() {
+        let tagged = media(name: "IMG_0042.jpg")
+        tagged.caption = "Sunset in Ella mountains"
+        tagged.tags = ["travel", "srilanka", "2026"]
+        let plain = media(name: "IMG_0043.jpg")
+
+        XCTAssertEqual(GalleryComposer.filter([tagged, plain], search: "ella").map(\.fileName), ["IMG_0042.jpg"])
+        XCTAssertEqual(GalleryComposer.filter([tagged, plain], search: "#srilanka").map(\.fileName), ["IMG_0042.jpg"])
+        XCTAssertEqual(GalleryComposer.filter([tagged, plain], search: "travel").map(\.fileName), ["IMG_0042.jpg"])
+    }
+
+    func testSearchMatchesDocumentType() {
+        let doc = media(name: "Passport.pdf", type: "document")
+        let photo = media(name: "Portrait.jpg", type: "photo")
+        XCTAssertEqual(GalleryComposer.filter([doc, photo], search: "pdf").map(\.fileName), ["Passport.pdf"])
+        XCTAssertEqual(GalleryComposer.filter([doc, photo], search: "document").map(\.fileName), ["Passport.pdf"])
     }
 
     // MARK: - Sorting
@@ -218,5 +251,16 @@ final class GalleryComposerTests: XCTestCase {
         let sections = GalleryComposer.sections(items, grouping: .none)
         XCTAssertEqual(sections.first?.subtitle, "2 items")
         XCTAssertEqual(GalleryComposer.sections([items[0]], grouping: .none).first?.subtitle, "1 item")
+    }
+
+    func testLibrarySummaryAndPhotosAppScopes() {
+        let items = [
+            media(name: "p1", type: "photo"),
+            media(name: "p2", type: "photo"),
+            media(name: "v1", type: "video"),
+            media(name: "d1", type: "document")
+        ]
+        XCTAssertEqual(GalleryComposer.librarySummary(items), "2 Photos, 1 Video, 1 Document")
+        XCTAssertEqual(GalleryGrouping.photosAppOrder.map(\.shortTitle), ["Years", "Months", "Days", "All"])
     }
 }

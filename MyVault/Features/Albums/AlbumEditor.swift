@@ -32,8 +32,11 @@ enum AlbumEditor {
         var changed = false
         for item in items {
             guard !item.belongs(to: album) else { continue }
+            if let primaryID = item.album?.id, !item.albumIDs.contains(primaryID) {
+                item.albumIDs.append(primaryID)
+            }
             item.albumIDs.append(album.id)
-            if item.album?.id != album.id {
+            if item.album == nil {
                 item.album = album
                 if !album.media.contains(where: { $0.id == item.id }) { album.media.append(item) }
             }

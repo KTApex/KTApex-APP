@@ -65,12 +65,24 @@ enum GalleryGrouping: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Order used by the iPhone Photos-style floating time-scope pill.
+    static let photosAppOrder: [GalleryGrouping] = [.year, .month, .day, .none]
+
     var title: String {
         switch self {
         case .day: return "By Day"
         case .month: return "By Month"
         case .year: return "By Year"
         case .none: return "No Grouping"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .year: return "Years"
+        case .month: return "Months"
+        case .day: return "Days"
+        case .none: return "All"
         }
     }
 }
@@ -97,7 +109,12 @@ enum GalleryComposer {
 
     // MARK: - Filter + search
 
-    static func matches(_ item: VaultMedia, search: String, album: VaultAlbum? = nil) -> Bool {
+    static func matches(
+        _ item: VaultMedia,
+        search: String,
+        album: VaultAlbum? = nil,
+        albums: [VaultAlbum] = []
+    ) -> Bool {
         guard !search.isBlank else { return true }
         let needle = folded(search.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !needle.isEmpty else { return true }
@@ -106,7 +123,11 @@ enum GalleryComposer {
         // `localizedCaseInsensitiveContains` only folds case, not diacritics, so
         // "cafe" would miss "Café.jpg" if it were used here.
         if folded(item.fileName).contains(needle) { return true }
-        if item.albumNames.contains(where: { folded($0).contains(needle) }) { return true }
+        if !item.caption.isEmpty, folded(item.caption).contains(needle) { return true }
+        let tagNeedle = needle.hasPrefix("#") ? String(needle.dropFirst()) : needle
+        if !tagNeedle.isEmpty, item.tags.contains(where: { folded($0).contains(tagNeedle) }) { return true }
+        let resolvedAlbums = albums.isEmpty ? (album.map { [$0] } ?? []) : albums
+        if item.albumNames(in: resolvedAlbums).contains(where: { folded($0).contains(needle) }) { return true }
         if DateSearchTerms.terms(for: item.createdAt).contains(where: { folded($0).contains(needle) }) { return true }
         if SearchKeywords.mediaTypeTerms(for: item).contains(needle) { return true }
         if SearchKeywords.favoriteTerms.contains(needle), item.isFavorite { return true }
@@ -122,7 +143,8 @@ enum GalleryComposer {
         _ items: [VaultMedia],
         search: String = "",
         filter: MediaFilter = .all,
-        album: VaultAlbum? = nil
+        album: VaultAlbum? = nil,
+        albums: [VaultAlbum] = []
     ) -> [VaultMedia] {
         items.filter { item in
             guard !item.isInTrash else { return false }
@@ -134,7 +156,7 @@ enum GalleryComposer {
             case .favorites: if !item.isFavorite { return false }
             case .albums: if item.albumIdentifiers.isEmpty { return false }
             }
-            return matches(item, search: search, album: album)
+            return matches(item, search: search, album: album, albums: albums)
         }
     }
 
@@ -185,6 +207,24 @@ enum GalleryComposer {
         "\(items.count) \(items.count == 1 ? "item" : "items")"
     }
 
+    /// Apple Photos-style footer summary ("24 Photos, 3 Videos").
+    static func librarySummary(_ items: [VaultMedia]) -> String {
+        let photos = items.filter { !$0.isVideo && !$0.isDocument }.count
+        let videos = items.filter { $0.isVideo }.count
+        let docs = items.filter { $0.isDocument }.count
+        var parts: [String] = []
+        if photos > 0 || (videos == 0 && docs == 0) {
+            parts.append("\(photos) \(photos == 1 ? "Photo" : "Photos")")
+        }
+        if videos > 0 {
+            parts.append("\(videos) \(videos == 1 ? "Video" : "Videos")")
+        }
+        if docs > 0 {
+            parts.append("\(docs) \(docs == 1 ? "Document" : "Documents")")
+        }
+        return parts.joined(separator: ", ")
+    }
+
     private static func key(for date: Date, grouping: GalleryGrouping, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
         let year = components.year ?? 0
@@ -233,7 +273,9 @@ enum GalleryComposer {
 enum SearchKeywords {
     /// Words a user might type when they mean the media type.
     static func mediaTypeTerms(for item: VaultMedia) -> [String] {
-        item.isVideo ? ["video", "videos", "movie", "clip"] : ["photo", "photos", "image", "picture"]
+        if item.isVideo { return ["video", "videos", "movie", "clip"] }
+        if item.isDocument { return ["pdf", "document", "documents", "file", "photo", "photos"] }
+        return ["photo", "photos", "image", "picture"]
     }
 
     static let favoriteTerms: Set<String> = ["favorite", "favorites", "favourite", "favourites", "loved", "starred"]

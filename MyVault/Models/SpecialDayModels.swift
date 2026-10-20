@@ -17,6 +17,7 @@ final class SpecialDay {
     var typeRaw: String = SpecialDayType.custom.rawValue
     var repeatsYearly: Bool = true
     var photoFileName: String?
+    var linkedAlbumID: String?
     /// Persisted as CSV because SwiftData cannot persist `[Int]` directly.
     var reminderDaysRaw: String = "0,1,7"
     var reminderDays: [Int] {
@@ -28,6 +29,19 @@ final class SpecialDay {
     var createdAt: Date = Date()
     init(title: String, date: Date, type: SpecialDayType = .custom) { self.title = title; self.date = date; self.typeRaw = type.rawValue }
     var type: SpecialDayType { SpecialDayType(rawValue: typeRaw) ?? .custom }
+
+    /// Resolves the chosen cover item from the live vault library. Matches either the
+    /// item's stable `id` or `encryptedFileName`, excluding trashed items.
+    func coverMedia(in library: [VaultMedia]) -> VaultMedia? {
+        guard let key = photoFileName, !key.isEmpty else { return nil }
+        return library.first { !$0.isInTrash && ($0.id == key || $0.encryptedFileName == key) }
+    }
+
+    /// Resolves the linked album from the current album list.
+    func linkedAlbum(in albums: [VaultAlbum]) -> VaultAlbum? {
+        guard let albumID = linkedAlbumID, !albumID.isEmpty else { return nil }
+        return albums.first { $0.id == albumID }
+    }
 }
 
 @Model

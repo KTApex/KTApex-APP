@@ -58,4 +58,26 @@ final class IntentRoutingTests: XCTestCase {
             XCTAssertTrue(name.hasPrefix("mv.intent."), "unexpected name \(name)")
         }
     }
+
+    func testNextSpecialDayDialogRespectsPrivacyMode() {
+        let suite = "com.myvault.tests.intent.\(UUID().uuidString)"
+        let defaults = try! XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertEqual(
+            WidgetSummaryService.nextSpecialDayDialog(privacyMode: false, defaults: defaults),
+            "Open MyVault to see your next special day."
+        )
+
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 3, to: Date()) ?? Date()
+        let event = SpecialDay(title: "Anniversary", date: tomorrow, type: .anniversary)
+        WidgetSummaryService.refresh(events: [event], defaults: defaults)
+
+        let privateDialog = WidgetSummaryService.nextSpecialDayDialog(privacyMode: true, defaults: defaults)
+        XCTAssertFalse(privateDialog.contains("Anniversary"), "privacy mode must hide event title")
+        XCTAssertTrue(privateDialog.contains("upcoming special day"))
+
+        let publicDialog = WidgetSummaryService.nextSpecialDayDialog(privacyMode: false, defaults: defaults)
+        XCTAssertTrue(publicDialog.contains("Anniversary"))
+    }
 }

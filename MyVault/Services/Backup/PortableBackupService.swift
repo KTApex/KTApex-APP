@@ -70,12 +70,13 @@ final class PortableBackupService: ObservableObject {
         var albums: Int = 0
         var specialDays: Int = 0
         var reminders: Int = 0
+        var notes: Int = 0
         var skippedDuplicates: Int = 0
         var verified: Int = 0
         var failedVerification: Int = 0
         var bytes: Int = 0
 
-        var isEmpty: Bool { media == 0 && albums == 0 && specialDays == 0 && reminders == 0 }
+        var isEmpty: Bool { media == 0 && albums == 0 && specialDays == 0 && reminders == 0 && notes == 0 }
 
         var headline: String {
             if isEmpty && skippedDuplicates > 0 { return "Everything in this backup is already in your vault" }
@@ -85,6 +86,7 @@ final class PortableBackupService: ObservableObject {
             if albums > 0 { parts.append("\(albums) album\(albums == 1 ? "" : "s")") }
             if specialDays > 0 { parts.append("\(specialDays) special day\(specialDays == 1 ? "" : "s")") }
             if reminders > 0 { parts.append("\(reminders) reminder\(reminders == 1 ? "" : "s")") }
+            if notes > 0 { parts.append("\(notes) note\(notes == 1 ? "" : "s")") }
             return "Restored " + parts.joined(separator: ", ")
         }
 
@@ -153,7 +155,8 @@ final class PortableBackupService: ObservableObject {
         // not required: albums, special days and reminders are content too.
         let manifest = plan.manifest
         guard manifest.counts.media > 0 || !manifest.albums.isEmpty
-            || !manifest.specialDays.isEmpty || !manifest.reminders.isEmpty else {
+            || !manifest.specialDays.isEmpty || !manifest.reminders.isEmpty
+            || !(manifest.notes ?? []).isEmpty else {
             throw BackupError.nothingToBackUp
         }
 
@@ -346,6 +349,8 @@ final class PortableBackupService: ObservableObject {
                 // Written in addition to `albumID` so a full-membership backup stays
                 // readable by older builds while losing nothing in this one.
                 albumIDs: item.albumIDs.isEmpty ? nil : item.albumIDs,
+                caption: item.caption.isEmpty ? nil : item.caption,
+                tagsRaw: item.tagsRaw.isEmpty ? nil : item.tagsRaw,
                 entryName: entryName
             ))
             bytes += item.fileSize
@@ -371,7 +376,8 @@ final class PortableBackupService: ObservableObject {
                     id: $0.id, title: $0.title, date: $0.date, notes: $0.notes,
                     typeRaw: $0.typeRaw, repeatsYearly: $0.repeatsYearly,
                     reminderDays: $0.reminderDays, reminderTimeHour: $0.reminderTimeHour,
-                    reminderTimeMinute: $0.reminderTimeMinute, createdAt: $0.createdAt
+                    reminderTimeMinute: $0.reminderTimeMinute, createdAt: $0.createdAt,
+                    photoFileName: $0.photoFileName, linkedAlbumID: $0.linkedAlbumID
                 )
             },
             reminders: reminders.map {
@@ -385,7 +391,11 @@ final class PortableBackupService: ObservableObject {
                 themeMode: UserDefaults.standard.string(forKey: "mv.theme"),
                 accent: UserDefaults.standard.string(forKey: "mv.accent"),
                 galleryColumns: UserDefaults.standard.object(forKey: "mv.galleryColumns") as? Int
-            )
+            ),
+            notes: {
+                let allNotes = SecureNoteService.shared.loadAll()
+                return allNotes.isEmpty ? nil : allNotes
+            }()
         )
 
         return BackupPlan(manifest: manifest, entries: entries, payloadBytes: bytes, skippedMissingFiles: skipped)
@@ -563,6 +573,12 @@ final class PortableBackupService: ObservableObject {
             )
             for media in manifest.media {
                 guard let existing = byHash[media.contentHash] else { continue }
+                if existing.caption.isEmpty, let caption = media.caption, !caption.isEmpty {
+                    existing.caption = caption
+                }
+                if existing.tagsRaw.isEmpty, let tagsRaw = media.tagsRaw, !tagsRaw.isEmpty {
+                    existing.tagsRaw = tagsRaw
+                }
                 let wanted = media.memberships.filter { albumsByID[$0] != nil }
                 let missing = wanted.filter { !existing.belongs(toAlbumID: $0) }
                 guard !missing.isEmpty else { continue }
@@ -587,6 +603,8 @@ final class PortableBackupService: ObservableObject {
                 model.width = media.width
                 model.height = media.height
                 model.duration = media.duration
+                model.caption = media.caption ?? ""
+                model.tagsRaw = media.tagsRaw ?? ""
                 // `memberships` covers both shapes: a new backup lists every album, an
                 // old one only the primary. IDs that do not resolve (an album the
                 // backup did not contain) are dropped rather than stored as a dangling
@@ -611,6 +629,8 @@ final class PortableBackupService: ObservableObject {
                 model.reminderTimeHour = day.reminderTimeHour
                 model.reminderTimeMinute = day.reminderTimeMinute
                 model.createdAt = day.createdAt
+                model.photoFileName = day.photoFileName
+                model.linkedAlbumID = day.linkedAlbumID
                 context.insert(model)
                 createdDays += 1
             }
@@ -630,6 +650,8 @@ final class PortableBackupService: ObservableObject {
             if forceCommitFailure { throw BackupError.failedToWrite }
             try context.save()
 
+            let restoredNotes = (try? SecureNoteService.shared.mergeRestored(manifest.notes ?? [])) ?? 0
+
             // Device-independent preferences only: nothing about unlock security is
             // restored, so this device keeps its own PIN/biometric configuration.
             applyRestoredSettings(manifest.settings)
@@ -639,6 +661,7 @@ final class PortableBackupService: ObservableObject {
             summary.albums = createdAlbums
             summary.specialDays = createdDays
             summary.reminders = createdReminders
+            summary.notes = restoredNotes
             summary.skippedDuplicates = duplicateCount + inBackupDuplicates
             summary.bytes = encrypted.reduce(0) { $0 + $1.media.fileSize }
             written.clear()

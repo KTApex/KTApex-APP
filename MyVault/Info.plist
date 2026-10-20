@@ -34,6 +34,10 @@
     <true/>
     <key>NSFaceIDUsageDescription</key>
     <string>MyVault uses Face ID to securely unlock your private vault.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>MyVault uses the camera to capture photos and videos directly into your encrypted vault without saving them to Apple Photos.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MyVault uses the microphone when recording videos directly into your encrypted vault.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>MyVault needs photo library access so you can import photos and videos into your encrypted vault.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>

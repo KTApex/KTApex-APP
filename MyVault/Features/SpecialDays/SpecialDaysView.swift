@@ -5,18 +5,25 @@ struct SpecialDaysView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.modelContext) private var context
     @Query(sort: \SpecialDay.date) private var events: [SpecialDay]
+    @Query(sort: \VaultMedia.createdAt, order: .reverse) private var media: [VaultMedia]
+    @Query(sort: \VaultAlbum.createdAt) private var albums: [VaultAlbum]
     @State private var showingEditor = false
     @State private var editingEvent: SpecialDay?
     @State private var selectedEventID: String?
 
+    private var visibleEvents: [SpecialDay] {
+        guard !appState.isDecoyMode else { return [] }
+        return events
+    }
+
     private var sorted: [SpecialDay] {
-        events.sorted { CountdownEngine.nextOccurrence(of: $0).daysRemaining < CountdownEngine.nextOccurrence(of: $1).daysRemaining }
+        visibleEvents.sorted { CountdownEngine.nextOccurrence(of: $0).daysRemaining < CountdownEngine.nextOccurrence(of: $1).daysRemaining }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if events.isEmpty {
+                if visibleEvents.isEmpty {
                     MVEmptyState(
                         symbol: "heart",
                         title: "No special days yet",
@@ -26,14 +33,18 @@ struct SpecialDaysView: View {
                     )
                 } else {
                     List(sorted) { event in
-                        SpecialDayCard(event: event)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .onTapGesture { selectedEventID = event.id }
-                            .swipeActions {
-                                Button("Delete", role: .destructive) { delete(event) }
-                                Button("Edit") { editingEvent = event }
-                            }
+                        SpecialDayCard(
+                            event: event,
+                            cover: event.coverMedia(in: media),
+                            linkedAlbum: event.linkedAlbum(in: albums)
+                        )
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .onTapGesture { selectedEventID = event.id }
+                        .swipeActions {
+                            Button("Delete", role: .destructive) { delete(event) }
+                            Button("Edit") { editingEvent = event }
+                        }
                     }
                     .listStyle(.plain)
                 }
@@ -46,12 +57,12 @@ struct SpecialDaysView: View {
             .sheet(isPresented: $showingEditor) { SpecialDayEditor(event: nil) }
             .sheet(item: $editingEvent) { SpecialDayEditor(event: $0) }
             .navigationDestination(isPresented: detailBinding) {
-                if let event = events.first(where: { $0.id == selectedEventID }) {
+                if let event = visibleEvents.first(where: { $0.id == selectedEventID }) {
                     SpecialDayDetailView(event: event)
                 }
             }
             .onChange(of: appState.deepLinkedSpecialDayID) { _, id in
-                if let id, events.contains(where: { $0.id == id }) {
+                if let id, visibleEvents.contains(where: { $0.id == id }) {
                     selectedEventID = id
                     appState.deepLinkedSpecialDayID = nil
                 }
@@ -77,17 +88,25 @@ struct SpecialDaysView: View {
 
 struct SpecialDayCard: View {
     let event: SpecialDay
+    var cover: VaultMedia? = nil
+    var linkedAlbum: VaultAlbum? = nil
     private var occ: CountdownEngine.Occurrence { CountdownEngine.nextOccurrence(of: event) }
 
     var body: some View {
         MVCard {
             HStack(spacing: 16) {
-                CountdownRing(progress: ringProgress)
-                    .frame(width: 56, height: 56)
-                    .overlay {
-                        Image(systemName: event.type.symbol)
-                            .foregroundStyle(.tint)
-                    }
+                if let cover {
+                    MediaThumbnailView(item: cover, pixelSize: 160)
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: MVRadius.s, style: .continuous))
+                } else {
+                    CountdownRing(progress: ringProgress)
+                        .frame(width: 56, height: 56)
+                        .overlay {
+                            Image(systemName: event.type.symbol)
+                                .foregroundStyle(.tint)
+                        }
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(event.title).font(MVFont.headline)
                     Text(event.date.formatted(date: .abbreviated, time: .omitted))
@@ -97,6 +116,11 @@ struct SpecialDayCard: View {
                     if occ.yearsCompleted > 0 {
                         Text("\(occ.yearsCompleted) \(occ.yearsCompleted == 1 ? "year" : "years") together")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let linkedAlbum {
+                        Label(linkedAlbum.name, systemImage: "rectangle.stack.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()

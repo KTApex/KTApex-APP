@@ -139,6 +139,58 @@ final class ImportCoordinator: ObservableObject {
         Task { await run(items, context: context, album: album) }
     }
 
+    /// Imports raw media payloads (e.g., from the in-app camera) directly into the
+    /// encrypted vault without touching the Apple Photos library.
+    func startPayloads(
+        _ payloads: [ImportPayload],
+        label: String = "Encrypting into your vault",
+        context: ModelContext,
+        album: VaultAlbum?
+    ) {
+        guard !payloads.isEmpty, !isWorking else { return }
+        cancelRequested = false
+        summary = nil
+        notice = nil
+        stage = .working(label: label, completed: 0, total: payloads.count)
+        Task { await runPayloads(payloads, label: label, context: context, album: album) }
+    }
+
+    /// Imports image or video files selected from the Files app directly into the
+    /// encrypted vault.
+    func startFiles(_ urls: [URL], context: ModelContext, album: VaultAlbum?) {
+        guard !urls.isEmpty, !isWorking else { return }
+        cancelRequested = false
+        summary = nil
+        notice = nil
+        stage = .working(label: "Reading from Files", completed: 0, total: urls.count)
+        Task {
+            var payloads: [ImportPayload] = []
+            var readFailures = 0
+            for url in urls {
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                if let data = try? Data(contentsOf: url), !data.isEmpty {
+                    let capturedAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? nil
+                    payloads.append(ImportPayload(
+                        data: data,
+                        assetIdentifier: nil,
+                        suggestedFileName: url.lastPathComponent,
+                        capturedAt: capturedAt
+                    ))
+                } else {
+                    readFailures += 1
+                }
+            }
+            await runPayloads(
+                payloads,
+                initialFailed: readFailures,
+                label: "Encrypting from Files",
+                context: context,
+                album: album
+            )
+        }
+    }
+
     /// Stops after the current item. Everything already verified stays in the vault.
     func cancel() {
         guard isWorking else { return }
@@ -208,6 +260,55 @@ final class ImportCoordinator: ObservableObject {
         }
     }
 
+    private func runPayloads(
+        _ payloads: [ImportPayload],
+        initialFailed: Int = 0,
+        label: String,
+        context: ModelContext,
+        album: VaultAlbum?
+    ) async {
+        var result = Summary()
+        result.failed = initialFailed
+        if initialFailed > 0 {
+            result.firstErrorMessage = "One or more files could not be read."
+        }
+        var seen = Self.existingHashes(in: context)
+        let total = payloads.count
+
+        for (index, payload) in payloads.enumerated() {
+            if cancelRequested {
+                result.skipped = total - index
+                break
+            }
+            stage = .working(label: label, completed: index, total: max(total, 1))
+            let outcome = await VaultImportService.shared.importItem(payload, seenHashes: seen)
+            switch outcome.status {
+            case .imported:
+                seen.insert(outcome.contentHash)
+                if persist(outcome, context: context, album: album) {
+                    result.imported += 1
+                } else {
+                    VaultStorageService.shared.delete(fileName: outcome.storedName)
+                    result.failed += 1
+                    if result.firstErrorMessage == nil {
+                        result.firstErrorMessage = "Your vault could not save the new item."
+                    }
+                }
+            case .duplicate:
+                result.duplicates += 1
+            case .failed:
+                result.failed += 1
+                if result.firstErrorMessage == nil { result.firstErrorMessage = outcome.errorMessage }
+            }
+            stage = .working(label: label, completed: index + 1, total: max(total, 1))
+        }
+
+        summary = result
+        stage = .idle
+        if result.imported > 0 { Haptics.success() } else if result.failed > 0 { Haptics.error() } else { Haptics.tap() }
+        notice = Self.summaryNotice(result)
+    }
+
     /// The removal gate: an asset may be offered for deletion only when its
     /// import verified *and* its SwiftData row persisted. Failed, duplicate and
     /// persist-failed items are never eligible, so a Photos original is never
@@ -232,7 +333,7 @@ final class ImportCoordinator: ObservableObject {
         media.width = result.width
         media.height = result.height
         media.duration = result.duration
-        media.album = album
+        if let album { AlbumEditor.add([media], to: album) }
         // Real capture date so the gallery groups by when the moment happened, not
         // by when it was imported. Never fabricated: falls back to now, and a
         // nonsensical future date is clamped.

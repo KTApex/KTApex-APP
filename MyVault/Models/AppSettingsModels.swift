@@ -68,4 +68,21 @@ enum AppSettingsStore {
     /// Biometrics are only skippable while a PIN exists as the fallback. Without
     /// one, honouring "off" would leave the owner locked out of their own vault.
     static var biometricUnlockAllowed: Bool { biometricEnabled || !PINService.shared.isEnabled }
+
+    /// When on, taking a screenshot or starting a screen recording while the vault is
+    /// unlocked immediately locks the vault.
+    static var lockOnScreenCapture: Bool {
+        UserDefaults.standard.object(forKey: "mv.lockOnScreenCapture") as? Bool ?? true
+    }
+    static func setLockOnScreenCapture(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "mv.lockOnScreenCapture")
+    }
+
+    /// When on, placing the phone face-down immediately locks the vault.
+    static var panicFaceDownLock: Bool {
+        UserDefaults.standard.object(forKey: "mv.panicFaceDownLock") as? Bool ?? false
+    }
+    static func setPanicFaceDownLock(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "mv.panicFaceDownLock")
+    }
 }

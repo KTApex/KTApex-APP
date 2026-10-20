@@ -30,7 +30,8 @@ struct TrashView: View {
     @State private var alertMessage: String?
 
     private var items: [VaultMedia] {
-        trashed.sorted { ($0.trashedAt ?? $0.createdAt) > ($1.trashedAt ?? $1.createdAt) }
+        guard !appState.isDecoyMode else { return [] }
+        return trashed.sorted { ($0.trashedAt ?? $0.createdAt) > ($1.trashedAt ?? $1.createdAt) }
     }
 
     var body: some View {

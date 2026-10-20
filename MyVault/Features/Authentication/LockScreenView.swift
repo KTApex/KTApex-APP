@@ -60,6 +60,7 @@ struct LockScreenView: View {
                     isAuthenticating = false
                     if ok {
                         Haptics.success()
+                        appState.isDecoyMode = false
                         appState.isUnlocked = true
                     }
                 }
@@ -75,10 +76,11 @@ struct LockScreenView: View {
     }
 
     private func unlockWithPIN() {
-        if pinService.verify(pin) {
+        if let mode = pinService.verifyWithMode(pin) {
             Haptics.success()
             pin = ""
             error = nil
+            appState.isDecoyMode = (mode == .decoy)
             appState.isUnlocked = true
         } else {
             Haptics.error()
