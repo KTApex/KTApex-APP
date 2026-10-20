@@ -77,7 +77,6 @@ final class SecureNoteService {
     }()
 
     func loadAll() -> [SecureNote] {
-        guard let key = try? KeychainService.shared.vaultKey() else { return [] }
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: notesDirectory,
             includingPropertiesForKeys: nil
@@ -85,7 +84,7 @@ final class SecureNoteService {
         var loaded: [SecureNote] = []
         for url in urls where url.pathExtension == "mvnote" {
             guard let ciphertext = try? Data(contentsOf: url),
-                  let plaintext = try? EncryptionService.shared.decrypt(ciphertext, key: key),
+                  let plaintext = try? EncryptionService.shared.decrypt(ciphertext),
                   let note = try? Self.decoder.decode(SecureNote.self, from: plaintext) else {
                 continue
             }
@@ -96,9 +95,8 @@ final class SecureNoteService {
 
     @discardableResult
     func save(_ note: SecureNote) throws -> SecureNote {
-        let key = try KeychainService.shared.vaultKey()
         let plaintext = try Self.encoder.encode(note)
-        let ciphertext = try EncryptionService.shared.encrypt(plaintext, key: key)
+        let ciphertext = try EncryptionService.shared.encrypt(plaintext)
         let url = fileURL(for: note.id)
         try ciphertext.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return note
